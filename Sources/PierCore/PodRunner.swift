@@ -547,10 +547,7 @@ public actor PodRunner {
         update { $0.bootSeconds = Double(booted.components.seconds) + Double(booted.components.attoseconds) / 1e18 }
         podLog.note("virtual machine up in \(booted)")
         try await prepareVolumes(spec, in: pod)
-        if spec.services.contains(where: { $0.gpu == true }) {
-            let log = podLog
-            GPUServer.start(cache: root.appendingPathComponent("gpu-cache")) { log.note($0) }
-        }
+        if spec.services.contains(where: { $0.gpu == true }) { await startGPU(in: pod) }
 
         if separate {
             try await pod.startContainer(PodNetwork.helper)
@@ -725,6 +722,7 @@ public actor PodRunner {
         if separate {
             hosts.entries.append(Hosts.Entry(ipAddress: address, hostnames: [service.name] + (service.aliases ?? [])))
         }
+        if service.gpu == true { await startGPU(in: pod) }
         let cpus = spec.cpus
         let finalHosts = hosts
         try await pod.addContainer(service.name, rootfs: rootfs) { c in
@@ -941,11 +939,6 @@ public actor PodRunner {
                     }
                 }
             }
-        }
-        // The GPU backend for containers, there before any of them starts.
-        if spec.services.contains(where: { $0.gpu == true }), let shim = GPUShim.data {
-            dirs.append(GPUShim.volumePath)
-            files.append((GPUShim.volumePath + "/libggml-rpc.so", shim, 0o755))
         }
         guard !dirs.isEmpty || !files.isEmpty else { return }
         let bytes = files.reduce(0) { $0 + $1.data.count }
@@ -1407,6 +1400,23 @@ final class ByteSink: Writer, Sendable {
     }
 
     func close() throws {}
+}
+
+extension PodRunner {
+    /// The GPU server, and its backend in /work for containers to mount:
+    /// at boot, or when a service with GPU on joins the running pod.
+    func startGPU(in pod: LinuxPod) async {
+        if let shim = GPUShim.data {
+            do {
+                try await pod.prepareVolume(Self.workVolume, directories: [GPUShim.volumePath],
+                                            files: [(GPUShim.volumePath + "/libggml-rpc.so", shim, 0o755)])
+            } catch {
+                podLog.note("GPU: could not put its backend in /work: \(error)")
+            }
+        }
+        let log = podLog
+        GPUServer.start(cache: root.appendingPathComponent("gpu-cache")) { log.note($0) }
+    }
 }
 
 /// Pier's RPC backend for ggml in the containers (gpu/pier-gpu.cpp, built
