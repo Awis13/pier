@@ -30,33 +30,7 @@ public enum GPUServer {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 }
         }
         guard connected else { close(tcp); close(vsock); return }
-        let open = Mutex(2)
-        func pump(_ from: Int32, _ to: Int32) {
-            let t = Thread {
-                var buffer = [UInt8](repeating: 0, count: 1 << 20)
-                while true {
-                    let n = read(from, &buffer, buffer.count)
-                    if n <= 0 { break }
-                    var sent = 0
-                    while sent < n {
-                        let w = buffer.withUnsafeBytes { write(to, $0.baseAddress! + sent, n - sent) }
-                        if w <= 0 { break }
-                        sent += w
-                    }
-                    if sent < n { break }
-                }
-                shutdown(to, SHUT_WR)
-                shutdown(from, SHUT_RD)
-                if open.withLock({ $0 -= 1; return $0 == 0 }) {
-                    close(tcp)
-                    close(vsock)
-                }
-            }
-            t.stackSize = 1 << 20
-            t.start()
-        }
-        pump(vsock, tcp)
-        pump(tcp, vsock)
+        Relay.join(vsock, tcp)
     }
 
     private static let started = Mutex(false)

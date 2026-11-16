@@ -142,14 +142,24 @@ final class PodModel {
         if snapshot.pod == .running, Set(spec.services.map(\.name)).isSuperset(of: before) {
             let added = spec.services.filter { !before.contains($0.name) }
             let changed = spec.services.filter { s in old.first { $0.name == s.name }.map { $0 != s } ?? false }
-            let onlyAccess = changed.allSatisfy { s in
+            // Agent access and ports change while the pod runs.
+            let live = changed.allSatisfy { s in
                 guard var o = old.first(where: { $0.name == s.name }) else { return false }
                 o.agentAccess = s.agentAccess
+                o.ports = s.ports
                 return o == s
             }
-            if onlyAccess {
+            if live {
                 Task {
-                    for s in changed { await runner.setAgentAccess(s) }
+                    for s in changed {
+                        await runner.setAgentAccess(s)
+                        if s.ports != old.first(where: { $0.name == s.name })?.ports, !(await runner.setPorts(s)) {
+                            AppLog.write("pier: \(s.name)'s ports need a restart")
+                            await runner.stop()
+                            await run(jit: jit)
+                            return
+                        }
+                    }
                     for s in added {
                         do {
                             try await runner.addService(s)
@@ -230,6 +240,8 @@ final class PodModel {
         case .removed(let name):
             for t in terminals where t.service == name { closeTerminal(t) }
             spec.services.removeAll { $0.name == name }
+        case .changed(let s):
+            if let i = spec.services.firstIndex(where: { $0.name == s.name }) { spec.services[i] = s }
         }
     }
 

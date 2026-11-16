@@ -94,6 +94,8 @@ public struct SpawnInfo: Sendable, Equatable {
 public enum ServiceEvent: Sendable {
     case added(ServiceSpec)
     case removed(String)
+    /// Its ports changed (an agent published one).
+    case changed(ServiceSpec)
 }
 
 /// How the pod's virtual machine runs its CPUs.
@@ -143,6 +145,10 @@ public actor PodRunner {
     var agentListener: VsockListener?
     /// Containers' connections to the GPU, over vsock.
     var gpuListener: VsockListener?
+    /// Ports the app publishes itself (see LivePorts.swift), by host port,
+    /// and the ones the VM forwards since it booted, by service.
+    var livePorts: [UInt16: LivePort] = [:]
+    var bootPorts: [String: Set<UInt16>] = [:]
     /// The pod's hosts file and network kind, for services added later.
     private var bootHosts: Hosts?
     private var restarts: [String: Int] = [:]
@@ -442,6 +448,7 @@ public actor PodRunner {
         }
         // With networks of their own, the VM takes each port at the same
         // number and the helper sends it on to its service.
+        recordBootPorts(spec)
         let forwards = spec.services.flatMap { s in
             (s.ports + (s.sshPort.map { [PortMapping(host: $0, container: $0)] } ?? [])).map {
                 CratePortForward(hostAddress: bind, hostPort: $0.host, guestPort: separate ? $0.host : $0.container)
@@ -703,6 +710,7 @@ public actor PodRunner {
             say(name, "failed to start: \(error)")
             throw error
         }
+        await publishPorts(of: service)
         // The others learn its name.
         if running.usesSeparateNetworks {
             let line = ([PodNetwork.address(index), name] + (service.aliases ?? [])).joined(separator: " ")
@@ -748,6 +756,7 @@ public actor PodRunner {
         if let state = snapshot.services[name], state != .stopped {
             try await stopService(name)
         }
+        await unpublishAll(of: name)
         try await pod.removeContainer(name)
         hotAdded.remove(name)
         netIndex[name] = nil
@@ -981,6 +990,7 @@ public actor PodRunner {
         setPod(.stopping)
         stopAgentAPI()
         try? gpuListener?.finish()
+        closeLivePorts()
         gpuListener = nil
         restartTasks.values.forEach { $0.cancel() }
         restartTasks.removeAll()
