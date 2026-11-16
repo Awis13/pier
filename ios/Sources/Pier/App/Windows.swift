@@ -9,10 +9,10 @@ struct TerminalWindow: View {
     @Environment(PodModel.self) private var pod
     @Environment(JITSession.self) private var jit
     @Environment(\.dismissWindow) private var dismissWindow
-    @State private var windowID = UUID().uuidString
-    let serviceName: String?
+    let target: TerminalTarget?
 
-    private var deck: String { "\(serviceName ?? "")@\(windowID)" }
+    private var serviceName: String? { target?.service }
+    private var deck: String { "\(target?.service ?? "")@\(target?.id.uuidString ?? "")" }
 
     var body: some View {
         Group {
@@ -95,6 +95,14 @@ struct SceneEnd: UIViewRepresentable {
     func updateUIView(_ v: Probe, context: Context) { v.ended = ended }
 }
 
+/// What a terminal window shows: a service, and an ID of its own. iPadOS
+/// brings forward a window already showing the same value instead of
+/// opening another, so every new window gets a new ID.
+struct TerminalTarget: Codable, Hashable {
+    var service: String
+    var id = UUID()
+}
+
 /// What the selected service is, for the menu bar's commands.
 struct SelectedServiceKey: FocusedValueKey {
     typealias Value = String
@@ -117,7 +125,7 @@ struct PierCommands: Commands {
             Button("New Window") { openWindow(id: "main") }
                 .keyboardShortcut("n", modifiers: .command)
             Button("New Terminal Window") {
-                if let selected { openWindow(id: "terminal", value: selected) }
+                if let selected { openWindow(id: "terminal", value: TerminalTarget(service: selected)) }
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(selected == nil)

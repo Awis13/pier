@@ -156,7 +156,7 @@ struct RootView: View {
                 Task {
                     for _ in 0..<n {
                         try? await Task.sleep(for: .seconds(2))
-                        openWindow(id: "terminal", value: first.name)
+                        openWindow(id: "terminal", value: TerminalTarget(service: first.name))
                     }
                 }
             }
@@ -617,7 +617,7 @@ struct ServiceMenu: View {
             Label("Copy", systemImage: "doc.on.doc")
         }
         Section {
-            Button { openWindow(id: "terminal", value: service.name) } label: {
+            Button { openWindow(id: "terminal", value: TerminalTarget(service: service.name)) } label: {
                 Label("Open in New Window", systemImage: "macwindow.badge.plus")
             }
         }

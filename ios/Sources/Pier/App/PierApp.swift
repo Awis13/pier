@@ -25,8 +25,8 @@ struct PierApp: App {
                 .onAppear { AppLog.write("pier: window opened, pod \(pod.snapshot.pod.label), booted \(pod.snapshot.bootSeconds.map { String($0) } ?? "-")") }
         }
         .commands { PierCommands() }
-        WindowGroup("Terminal", id: "terminal", for: String.self) { $name in
-            TerminalWindow(serviceName: name)
+        WindowGroup("Terminal", id: "terminal", for: TerminalTarget.self) { $target in
+            TerminalWindow(target: target)
                 .environment(jit)
                 .environment(pod)
         }
