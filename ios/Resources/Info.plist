@@ -49,6 +49,11 @@
 	<string>Pier looks for this iPad's Remote Pairing service to turn on JIT, and serves your containers' ports on the network when you allow it.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Keep-alive uses coarse location updates only to keep your containers running in the background. Location is never stored or sent anywhere.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

@@ -15,13 +15,19 @@ struct PierApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             RootView()
                 .environment(jit)
                 .environment(pod)
                 .onChange(of: phase) {
                     if phase == .active { jit.cameToFront() }
                 }
+        }
+        .commands { PierCommands() }
+        WindowGroup("Terminal", id: "terminal", for: String.self) { $name in
+            TerminalWindow(serviceName: name)
+                .environment(jit)
+                .environment(pod)
         }
     }
 }

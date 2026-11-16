@@ -71,6 +71,7 @@ struct RootView: View {
                 )
             }
         }
+        .focusedSceneValue(\.selectedService, pod.spec.services.contains(where: { $0.name == selection }) ? selection : nil)
         .sheet(isPresented: $adding) {
             ServiceEditor(original: nil) { new in
                 pod.change(jit: jit) { $0.append(new) }
@@ -573,6 +574,7 @@ struct ServiceMenu: View {
     @Environment(PodModel.self) private var pod
     @Environment(JITSession.self) private var jit
     @Environment(\.openURL) private var openURL
+    @Environment(\.openWindow) private var openWindow
     let service: ServiceSpec
 
     var body: some View {
@@ -610,6 +612,11 @@ struct ServiceMenu: View {
             Button { UIPasteboard.general.string = service.image } label: { Label("Image", systemImage: "shippingbox") }
         } label: {
             Label("Copy", systemImage: "doc.on.doc")
+        }
+        Section {
+            Button { openWindow(id: "terminal", value: service.name) } label: {
+                Label("Open in New Window", systemImage: "macwindow.badge.plus")
+            }
         }
         Section {
             Button { pod.editRequest = service.name } label: { Label("Edit...", systemImage: "pencil") }
