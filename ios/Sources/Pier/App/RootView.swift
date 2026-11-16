@@ -80,6 +80,9 @@ struct RootView: View {
                 Switch.go(to: e, pod: pod, openWindow: openWindow)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pierQuickSwitch)) { n in
+            if let deck = n.object as? String, deck == selection { switching = true }
+        }
         .onChange(of: pod.showRequest) {
             if let name = pod.showRequest {
                 selection = name

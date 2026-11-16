@@ -35,6 +35,9 @@ final class TerminalWindows {
 /// Asks the terminal on screen for a deck to show a tab (and the pane in it).
 extension Notification.Name {
     static let pierShowTab = Notification.Name("pier.showTab")
+    /// Cmd-P from a terminal (it takes the keys before the menu bar does);
+    /// the object is the deck it shows.
+    static let pierQuickSwitch = Notification.Name("pier.quickSwitch")
 }
 
 @MainActor

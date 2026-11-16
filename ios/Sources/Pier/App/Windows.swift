@@ -64,6 +64,9 @@ struct TerminalWindow: View {
                 .focusedSceneValue(\.selectedService, name)
                 .focusedSceneValue(\.switcherShown, $switching)
                 .background(DeckMark(deck: deck))
+                .onReceive(NotificationCenter.default.publisher(for: .pierQuickSwitch)) { n in
+                    if n.object as? String == deck { switching = true }
+                }
                 .task {
                     // --switcher opens Cmd-P in a terminal window (checking without a keyboard).
                     if Checks.has("--switcher") {

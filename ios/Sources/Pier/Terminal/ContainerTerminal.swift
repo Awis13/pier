@@ -417,12 +417,14 @@ final class TerminalHostController: UIViewController {
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
+            UIKeyCommand(title: "Quick Switch", action: #selector(quickSwitch), input: "p", modifierFlags: .command),
             UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
             UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ]
     }
 
     @objc private func showHistory() { presentHistory(for: termTab) }
+    @objc private func quickSwitch() { NotificationCenter.default.post(name: .pierQuickSwitch, object: termTab?.deck) }
     @objc private func previousBlock() { termTab?.blocks.jump(up: true) }
     @objc private func nextBlock() { termTab?.blocks.jump(up: false) }
     @objc private func bigger() { Appearance.shared.fontSize = min(Appearance.shared.fontSize + 1, 36) }
@@ -810,6 +812,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     }
 
     @objc private func showHistory() { presentHistory(for: focused ?? shown) }
+    @objc private func quickSwitch() { NotificationCenter.default.post(name: .pierQuickSwitch, object: deck) }
     @objc private func previousBlock() { (focused ?? shown)?.blocks.jump(up: true) }
     @objc private func nextBlock() { (focused ?? shown)?.blocks.jump(up: false) }
     @objc private func splitRight() { split(.horizontal) }
@@ -953,6 +956,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
+            UIKeyCommand(title: "Quick Switch", action: #selector(quickSwitch), input: "p", modifierFlags: .command),
             UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
             UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ] + (1...9).map {
