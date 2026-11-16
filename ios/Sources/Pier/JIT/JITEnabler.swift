@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+import MachO
 import UIKit
 
 /// Turning JIT on: getting a debugger to attach to crate while it runs.
@@ -19,6 +20,9 @@ extension JITSession {
         AppLog.write("jit: turning on with \(method.rawValue)")
 
         let asked: Bool
+        // Inside LiveContainer only StikDebug can attach (the helper does
+        // not start there).
+        let method = Self.inLiveContainer ? .stikDebug : method
         switch method {
         case .stikDebug:
             asked = await askStikDebug()
@@ -45,12 +49,24 @@ extension JITSession {
     /// Opens StikDebug and asks it to attach to this process with legacy.js,
     /// the script that answers crate's `brk #0x69`. StikDebug asks the user to
     /// confirm, attaches, and brings crate back to the front.
+    static var inLiveContainer: Bool { getenv("LC_HOME_PATH") != nil }
+
+    /// The installed app this process is: Pier, or LiveContainer when Pier
+    /// runs inside it (where `Bundle.main` names Pier). StikDebug attaches
+    /// to the installed one.
+    static var hostBundleID: String? {
+        guard inLiveContainer, let image = _dyld_get_image_name(0) else { return Bundle.main.bundleIdentifier }
+        let app = URL(fileURLWithPath: String(cString: image)).deletingLastPathComponent()
+        let info = NSDictionary(contentsOf: app.appendingPathComponent("Info.plist"))
+        return info?["CFBundleIdentifier"] as? String ?? Bundle.main.bundleIdentifier
+    }
+
     private func askStikDebug() async -> Bool {
         var url = URLComponents()
         url.scheme = "stikdebug"
         url.host = "enable-jit"
         url.queryItems = [
-            URLQueryItem(name: "bundle-id", value: Bundle.main.bundleIdentifier),
+            URLQueryItem(name: "bundle-id", value: Self.hostBundleID),
             URLQueryItem(name: "pid", value: String(getpid())),
             URLQueryItem(name: "script-name", value: "legacy.js"),
         ]
