@@ -548,6 +548,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     private var softKeyboardUp = false
     private var pinchBase: Double = 0
     private var looks: AnyCancellable?
+    private var showObserver: NSObjectProtocol?
 
     init(pod: PodModel, service: ServiceSpec, deck: String, onClose: @escaping () -> Void) {
         self.pod = pod
@@ -672,6 +673,13 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         }
         let start = tabs.first { $0.id == pod.selectedTerminal[deck] } ?? tabs.first
         if let start { show(start) }
+        showObserver = NotificationCenter.default.addObserver(forName: .pierShowTab, object: nil, queue: .main) { [weak self] n in
+            MainActor.assumeIsolated {
+                guard let self, let id = n.object as? UUID,
+                      let t = self.pod.terminals.first(where: { $0.id == id }), t.deck == self.deck else { return }
+                self.show(t)
+            }
+        }
         applyAppearance()
     }
 

@@ -278,6 +278,9 @@ final class PodModel {
         }
     }
 
+    /// A service the main window should show (Cmd-P picked one of its tabs).
+    var showRequest: String?
+
     /// The service whose editor or delete question is open (set from its menu).
     var editRequest: String?
     var deleteRequest: String?

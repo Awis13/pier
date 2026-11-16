@@ -7,6 +7,7 @@ struct RootView: View {
     @Environment(JITSession.self) private var jit
     @Environment(\.openWindow) private var openWindow
     @State private var selection: String?
+    @State private var switching = false
     @State private var adding = false
     @State private var pickingCompose = false
     @State private var compose: ComposeSource?
@@ -73,6 +74,18 @@ struct RootView: View {
         }
         .background(MainWindowMark())
         .onAppear { MainWindow.shared.open = { openWindow(id: "main") } }
+        .focusedSceneValue(\.switcherShown, $switching)
+        .sheet(isPresented: $switching) {
+            SwitcherView(model: SwitcherModel(pod: pod, currentTab: selection.flatMap { pod.selectedTerminal[$0] })) { e in
+                Switch.go(to: e, pod: pod, openWindow: openWindow)
+            }
+        }
+        .onChange(of: pod.showRequest) {
+            if let name = pod.showRequest {
+                selection = name
+                pod.showRequest = nil
+            }
+        }
         .focusedSceneValue(\.selectedService, pod.spec.services.contains(where: { $0.name == selection }) ? selection : nil)
         .sheet(isPresented: $adding) {
             ServiceEditor(original: nil) { new in
@@ -756,7 +769,7 @@ struct NetworkView: View {
 }
 
 /// Launch arguments for checking Pier without touch (`--autostart`,
-/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`, `--split`, `--suggest-test`). They count only when
+/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`, `--split`, `--suggest-test`, `--switcher`). They count only when
 /// the launch also sets PIER_CHECKS=1, which tapping the icon never does, and
 /// each acts once per launch.
 enum Checks {

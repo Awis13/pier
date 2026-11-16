@@ -10,6 +10,7 @@ struct TerminalWindow: View {
     @Environment(JITSession.self) private var jit
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
+    @State private var switching = false
     let target: TerminalTarget?
 
     private var serviceName: String? { target?.service }
@@ -61,6 +62,20 @@ struct TerminalWindow: View {
                 .background(SceneEnd { pod.closeDeck(deck) })
                 // Shift-Command-N here: another window, a new shell in the same container.
                 .focusedSceneValue(\.selectedService, name)
+                .focusedSceneValue(\.switcherShown, $switching)
+                .background(DeckMark(deck: deck))
+                .task {
+                    // --switcher opens Cmd-P in a terminal window (checking without a keyboard).
+                    if Checks.has("--switcher") {
+                        try? await Task.sleep(for: .seconds(14))
+                        switching = true
+                    }
+                }
+                .sheet(isPresented: $switching) {
+                    SwitcherView(model: SwitcherModel(pod: pod, currentTab: pod.selectedTerminal[deck])) { e in
+                        Switch.go(to: e, pod: pod, openWindow: openWindow)
+                    }
+                }
             } else {
                 ContentUnavailableView("No Such Service", systemImage: "terminal",
                                        description: Text("Open a service's terminal window from its menu."))
@@ -175,17 +190,50 @@ struct SelectedServiceKey: FocusedValueKey {
     typealias Value = String
 }
 
+/// The window's Cmd-P switcher, shown or not.
+struct SwitcherShownKey: FocusedValueKey {
+    typealias Value = Binding<Bool>
+}
+
 extension FocusedValues {
     var selectedService: String? {
         get { self[SelectedServiceKey.self] }
         set { self[SelectedServiceKey.self] = newValue }
     }
+    var switcherShown: Binding<Bool>? {
+        get { self[SwitcherShownKey.self] }
+        set { self[SwitcherShownKey.self] = newValue }
+    }
+}
+
+/// Tells `TerminalWindows` which scene shows a deck of tabs.
+struct DeckMark: UIViewRepresentable {
+    let deck: String
+
+    final class Probe: UIView {
+        var deck = ""
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard let scene = window?.windowScene else { return }
+            TerminalWindows.shared.sessionByDeck[deck] = scene.session.persistentIdentifier
+        }
+    }
+
+    func makeUIView(context: Context) -> Probe {
+        let v = Probe()
+        v.deck = deck
+        v.isUserInteractionEnabled = false
+        return v
+    }
+
+    func updateUIView(_ v: Probe, context: Context) {}
 }
 
 /// The menu bar: windows for services, and the terminal's own commands.
 struct PierCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.selectedService) private var selected
+    @FocusedValue(\.switcherShown) private var switcher
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -196,6 +244,11 @@ struct PierCommands: Commands {
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .disabled(selected == nil)
+        }
+        CommandGroup(after: .windowArrangement) {
+            Button("Quick Switch") { switcher?.wrappedValue = true }
+                .keyboardShortcut("p", modifiers: .command)
+                .disabled(switcher == nil)
         }
     }
 }
