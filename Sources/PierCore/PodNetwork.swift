@@ -67,9 +67,18 @@ struct PodNetwork {
 
     /// `arguments` run inside the container whose init is `pid`: its mount,
     /// UTS, IPC, network, PID and cgroup namespaces, its root and working
-    /// directory, a plain environment.
+    /// directory, a plain environment — and its cgroup, so the service's
+    /// memory limit applies, not the helper's small one. The helper sees only
+    /// its own cgroup, so the whole tree is mounted once from the VM's.
     static func enter(pid: Int32, _ arguments: [String]) -> [String] {
-        ["nsenter", "-t", String(pid), "-m", "-u", "-i", "-n", "-p", "-C", "-r", "-w", "--",
+        let join = """
+            [ -f /run/pier-cg/cgroup.procs ] || { mkdir -p /run/pier-cg && nsenter -t 1 -C mount -t cgroup2 none /run/pier-cg; } 2>/dev/null
+            cg=$(nsenter -t 1 -C cat /proc/\(pid)/cgroup 2>/dev/null | sed -n 's/^0:://p')
+            [ -n "$cg" ] && echo $$ > "/run/pier-cg$cg/cgroup.procs" 2>/dev/null
+            exec "$@"
+            """
+        return ["/bin/sh", "-c", join, "pier-enter",
+         "nsenter", "-t", String(pid), "-m", "-u", "-i", "-n", "-p", "-C", "-r", "-w", "--",
          "/usr/bin/env", "-i",
          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
          "HOME=/root", "TERM=xterm-256color", "COLORTERM=truecolor", "LANG=C.UTF-8",
