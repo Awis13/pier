@@ -8,6 +8,7 @@ struct PierApp: App {
 
     init() {
         AppLog.begin()
+        CommandNotifier.shared.install()
         let jit = JITSession()
         jit.start()
         _jit = State(initialValue: jit)

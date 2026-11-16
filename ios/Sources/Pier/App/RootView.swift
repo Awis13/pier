@@ -83,6 +83,11 @@ struct RootView: View {
         .onReceive(NotificationCenter.default.publisher(for: .pierQuickSwitch)) { n in
             if let deck = n.object as? String, deck == selection { switching = true }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .pierOpenTab)) { n in
+            guard let id = n.object as? UUID, let t = pod.terminals.first(where: { $0.id == id }) else { return }
+            let e = SwitchEntry(kind: .tab(id), service: t.service, title: t.title, place: "", current: false)
+            Switch.go(to: e, pod: pod, openWindow: openWindow)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .pierSwitchPick)) { n in
             if let e = n.object as? SwitchEntry { Switch.go(to: e, pod: pod, openWindow: openWindow) }
         }

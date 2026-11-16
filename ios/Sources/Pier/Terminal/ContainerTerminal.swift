@@ -45,6 +45,10 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
         view.terminalDelegate = self
         suggester = Suggester(view: view, service: service)
         blocks = CommandBlocks(view: view)
+        blocks.onEnd = { [weak self] b in
+            guard let self else { return }
+            CommandNotifier.shared.ended(b, tab: self.id, service: self.service, view: self.view)
+        }
         // A mouse: right click for the menu, drag to select (fingers still
         // scroll, and select with a long press, as before).
         let menu = UIEditMenuInteraction(delegate: self)
@@ -418,12 +422,19 @@ final class TerminalHostController: UIViewController {
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
             UIKeyCommand(title: "Quick Switch", action: #selector(quickSwitch), input: "p", modifierFlags: .command),
+            UIKeyCommand(title: "Find", action: #selector(openFind), input: "f", modifierFlags: .command),
+            UIKeyCommand(title: "Find Next", action: #selector(findDown), input: "g", modifierFlags: .command),
+            UIKeyCommand(title: "Find Previous", action: #selector(findUp), input: "g", modifierFlags: [.command, .shift]),
             UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
             UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ]
     }
 
     @objc private func showHistory() { presentHistory(for: termTab) }
+    private let findBar = FindBar()
+    @objc private func openFind() { if let t = termTab?.view { findBar.open(in: view, for: t) } }
+    @objc private func findDown() { if findBar.isOpen { findBar.step(up: false) } else { openFind() } }
+    @objc private func findUp() { if findBar.isOpen { findBar.step(up: true) } else { openFind() } }
     @objc private func quickSwitch() {
         NotificationCenter.default.post(name: .pierQuickSwitch, object: termTab?.deck)
     }
@@ -814,6 +825,10 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     }
 
     @objc private func showHistory() { presentHistory(for: focused ?? shown) }
+    private let findBar = FindBar()
+    @objc private func openFind() { if let t = (focused ?? shown)?.view { findBar.open(in: screen, for: t) } }
+    @objc private func findDown() { if findBar.isOpen { findBar.step(up: false) } else { openFind() } }
+    @objc private func findUp() { if findBar.isOpen { findBar.step(up: true) } else { openFind() } }
     /// Shown from here when this controller covers its window: SwiftUI's
     /// sheet underneath cannot present over it.
     @objc private func quickSwitch() {
@@ -974,6 +989,9 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
             UIKeyCommand(title: "Quick Switch", action: #selector(quickSwitch), input: "p", modifierFlags: .command),
+            UIKeyCommand(title: "Find", action: #selector(openFind), input: "f", modifierFlags: .command),
+            UIKeyCommand(title: "Find Next", action: #selector(findDown), input: "g", modifierFlags: .command),
+            UIKeyCommand(title: "Find Previous", action: #selector(findUp), input: "g", modifierFlags: [.command, .shift]),
             UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
             UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ] + (1...9).map {

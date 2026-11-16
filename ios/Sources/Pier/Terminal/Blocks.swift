@@ -76,6 +76,8 @@ final class CommandBlocks {
     private(set) var blocks: [CommandBlock] = []
     private var lines: [UIView] = []
     private var badges: [UILabel] = []
+    /// A command ended (for the notification of a long one).
+    var onEnd: ((CommandBlock) -> Void)?
     private static let keep = 1000
 
     init(view: TerminalView) { self.view = view }
@@ -106,6 +108,7 @@ final class CommandBlocks {
             guard let b = blocks.last, b.started != nil, b.ended == nil else { return }
             b.ended = Date()
             b.exit = fields.count > 1 ? Int(fields[1]) : nil
+            onEnd?(b)
         default:
             break
         }
