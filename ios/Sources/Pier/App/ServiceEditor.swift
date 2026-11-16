@@ -72,7 +72,7 @@ struct ServiceEditor: View {
                 } footer: {
                     Text(agentAccess == .off
                         ? "An agent in this service (Claude Code, a script) can work the pod through Pier's API. Off: no access."
-                        : "\(agentAccess.summary) The service finds how in /pier/AGENT.md and the pier command; a skill for Claude Code comes along. Applies at once to a running service.")
+                        : "\(agentAccess.summary) The service finds how in /pier/AGENT.md and the pier command; a skill for Claude Code comes along. Applies at once to a running service. Needs a network per service (Pod Settings).")
                 }
                 Section {
                     Toggle("Honest network scans", isOn: $honestScanning)

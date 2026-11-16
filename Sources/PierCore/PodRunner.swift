@@ -80,6 +80,20 @@ public struct SpawnInfo: Sendable, Equatable {
     public var owner: String
     public var image: String
     public var expires: Date?
+
+    init?(_ s: ServiceSpec) {
+        guard let owner = s.spawnedBy else { return nil }
+        self.owner = owner
+        image = s.image
+        expires = s.expires
+    }
+}
+
+/// The pod's services changed from inside: an agent started a container
+/// or one was removed. The app keeps its saved spec in step.
+public enum ServiceEvent: Sendable {
+    case added(ServiceSpec)
+    case removed(String)
 }
 
 /// How the pod's virtual machine runs its CPUs.
@@ -117,6 +131,11 @@ public actor PodRunner {
     /// Each service's place on the bridge (its address is .10 plus it),
     /// kept while the pod runs: one removed leaves a gap, not a shift.
     var netIndex: [String: Int] = [:]
+    /// The next place on the bridge: only ever goes up while the pod runs,
+    /// so an address is never given to a second service.
+    var nextNetIndex = 0
+    /// Names being added (pulled, unpacked) and not in the spec yet.
+    var reservedNames: Set<String> = []
     /// The Agent API: tokens (to their service), what agents started and
     /// when each goes, and the listener on the VM's vsock.
     var agentTokens: [String: String] = [:]
@@ -139,6 +158,7 @@ public actor PodRunner {
     private nonisolated let logs = Mutex<[String: LogBuffer]>([:])
     private nonisolated let snapshotState = Mutex(PodSnapshot())
     private nonisolated let onChange: @Sendable (PodSnapshot) -> Void
+    nonisolated let onServices: @Sendable (ServiceEvent) -> Void
 
     /// The pod's own log: preparing, booting, the guest's console.
     public nonisolated let podLog = LogBuffer(limit: 4000)
@@ -156,8 +176,10 @@ public actor PodRunner {
         kernel: URL,
         initImage: String = PodRunner.defaultInitImage,
         logger: Logger = Logger(label: "pier"),
-        onChange: @escaping @Sendable (PodSnapshot) -> Void = { _ in }
+        onChange: @escaping @Sendable (PodSnapshot) -> Void = { _ in },
+        onServices: @escaping @Sendable (ServiceEvent) -> Void = { _ in }
     ) throws {
+        self.onServices = onServices
         self.root = root
         self.kernel = kernel
         self.initImage = initImage
@@ -401,7 +423,11 @@ public actor PodRunner {
         let bind = spec.reachableFromNetwork ? "" : "127.0.0.1"
         let separate = spec.usesSeparateNetworks
         let network = PodNetwork(services: spec.services)
-        netIndex = Dictionary(uniqueKeysWithValues: spec.services.enumerated().map { ($1.name, $0) })
+        netIndex = spec.services.enumerated().reduce(into: [:]) { $0[$1.element.name] = $1.offset }
+        nextNetIndex = spec.services.count
+        update { s in
+            s.spawned = spec.services.reduce(into: [:]) { d, svc in d[svc.name] = SpawnInfo(svc) }
+        }
         // With networks of their own, the VM takes each port at the same
         // number and the helper sends it on to its service.
         let forwards = spec.services.flatMap { s in
@@ -625,32 +651,42 @@ public actor PodRunner {
     /// its ports reach the other services, not the iPad, until the pod
     /// starts again (the VM's port forwards are set when it boots).
     public func addService(_ service: ServiceSpec) async throws {
-        guard let pod, var running = currentSpec, snapshot.pod == .running else {
+        guard let pod, let spec = currentSpec, snapshot.pod == .running else {
             throw PierError("the pod is not running")
         }
-        guard !running.services.contains(where: { $0.name == service.name }) else {
-            throw PierError("\(service.name) is already in the pod")
+        let name = service.name
+        guard !spec.services.contains(where: { $0.name == name }), !reservedNames.contains(name) else {
+            throw PierError("\(name) is already in the pod")
         }
-        setService(service.name, .starting)
-        say(service.name, "adding to the running pod")
+        // Held until the service is in the spec, so a second request for the
+        // same name fails at once instead of unpacking into the same disk.
+        reservedNames.insert(name)
+        defer { reservedNames.remove(name) }
+        let run = generation
+        setService(name, .starting)
+        say(name, "adding to the running pod")
         let (rootfs, imageConfig) = try await rootfs(for: service)
+        // The pod may have stopped or changed while the image came.
+        guard generation == run, self.pod === pod, var running = currentSpec else {
+            throw PierError("the pod stopped while \(name) was being prepared")
+        }
         running.services.append(service)
         currentSpec = running
-        hotAdded.insert(service.name)
-        let index = (netIndex.values.max() ?? -1) + 1
-        netIndex[service.name] = index
+        hotAdded.insert(name)
+        let index = nextNetIndex
+        nextNetIndex += 1
+        netIndex[name] = index
         do {
             try await attach(service, rootfs, imageConfig, index: index, in: pod, spec: running)
         } catch {
-            setService(service.name, .failed(String(describing: error)))
-            say(service.name, "failed to start: \(error)")
+            setService(name, .failed(String(describing: error)))
+            say(name, "failed to start: \(error)")
             throw error
         }
         // The others learn its name.
         if running.usesSeparateNetworks {
-            let address = PodNetwork.address(index)
-            let line = ([address, service.name] + (service.aliases ?? [])).joined(separator: " ")
-            for other in running.services where other.name != service.name && snapshot.services[other.name] == .running {
+            let line = ([PodNetwork.address(index), name] + (service.aliases ?? [])).joined(separator: " ")
+            for other in currentSpec?.services ?? [] where other.name != name && snapshot.services[other.name] == .running {
                 _ = try? await exec(["/bin/sh", "-c", "echo '\(line)' >> /etc/hosts"], in: other.name)
             }
         }
@@ -678,29 +714,38 @@ public actor PodRunner {
         try await settle(service, index: index, address: separate ? address : nil, in: pod)
     }
 
-    /// Takes a service added while the pod runs out of it: stopped, its
-    /// container forgotten, its disk slot free. `deleteDisk` drops its root
-    /// filesystem too (an agent's container leaves nothing behind).
+    /// Takes a service out of the running pod: stopped (it stays when that
+    /// fails), its container forgotten, its name gone from the others'
+    /// hosts files. One added while the pod ran frees its disk slot; one
+    /// the pod booted with keeps its disk attached until the pod restarts.
+    /// `deleteDisk` drops its root filesystem too.
     public func removeService(_ name: String, deleteDisk: Bool) async throws {
-        guard let pod, var running = currentSpec else { throw PierError("the pod is not running") }
-        guard hotAdded.contains(name) else {
-            throw PierError("\(name) started with the pod: removing it restarts the pod")
-        }
+        guard let pod else { throw PierError("the pod is not running") }
+        guard name != PodNetwork.helper else { throw PierError("the network helper stays") }
         spawnTimers[name]?.cancel()
         spawnTimers[name] = nil
-        if snapshot.services[name] != .stopped { try? await stopService(name) }
+        if let state = snapshot.services[name], state != .stopped {
+            try await stopService(name)
+        }
         try await pod.removeContainer(name)
         hotAdded.remove(name)
         netIndex[name] = nil
-        running.services.removeAll { $0.name == name }
-        currentSpec = running
+        if var running = currentSpec {
+            running.services.removeAll { $0.name == name }
+            currentSpec = running
+        }
         agentTokens = agentTokens.filter { $0.value != name }
+        let drop = "awk -v n='\(name)' '{for(i=2;i<=NF;i++) if($i==n) next} 1' /etc/hosts > /tmp/.pier-hosts && cat /tmp/.pier-hosts > /etc/hosts; rm -f /tmp/.pier-hosts"
+        for other in currentSpec?.services ?? [] where snapshot.services[other.name] == .running {
+            _ = try? await exec(["/bin/sh", "-c", drop], in: other.name)
+        }
         if deleteDisk { try? FileManager.default.removeItem(at: serviceDir(name)) }
         update {
             $0.services[name] = nil
             $0.spawned[name] = nil
         }
         say(name, "removed from the pod")
+        onServices(.removed(name))
     }
 
     private func watch(_ name: String, in pod: LinuxPod) {
@@ -930,12 +975,6 @@ public actor PodRunner {
         }
         self.pod = nil
         pids = [:]
-        // What agents started goes with the pod, disks and all.
-        for name in snapshot.spawned.keys { try? FileManager.default.removeItem(at: serviceDir(name)) }
-        update { s in
-            for name in s.spawned.keys { s.services[name] = nil }
-            s.spawned = [:]
-        }
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
         update { s in
@@ -1124,6 +1163,7 @@ public actor PodRunner {
         say(service.name, "starting again")
         if hotAdded.contains(service.name) {
             // Its disk went back when it stopped: it is added again.
+            if snapshot.services[service.name] == .running { throw PierError("\(service.name) is running") }
             do {
                 try await pod.removeContainer(service.name)
                 let (rootfs, imageConfig) = try await rootfs(for: service)
@@ -1159,8 +1199,9 @@ public actor PodRunner {
         say(service.name, "running")
         setService(service.name, .running)
         await useHTTPSRepositories(in: service.name)
-                await applyScanning(service)
-                await runStartup(service)
+        await applyScanning(service)
+        await runStartup(service)
+        await installAgentAccess(updated.services[place])
         if let port = service.sshPort {
             _ = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
         }
@@ -1185,8 +1226,39 @@ public actor PodRunner {
     }
 
     public func exec(_ arguments: [String], in service: String) async throws -> (Int32, String) {
+        let (code, data) = try await execData(arguments, in: service, limit: 10_000)
+        return (code, data)
+    }
+
+    /// Runs a command and keeps its output whole up to `bytes` (stdout only),
+    /// for output that is data rather than lines to read.
+    func execBytes(_ arguments: [String], in service: String, bytes: Int, timeout: Double) async -> (Int32, Data)? {
+        await withTaskGroup(of: (Int32, Data)?.self) { group in
+            group.addTask {
+                guard let pod = await self.pod else { return nil }
+                let sink = ByteSink(limit: bytes)
+                let (target, args) = await self.route(arguments, in: service)
+                guard let process = try? await pod.execInContainer(target, processID: "exec-\(UUID().uuidString.prefix(8))", configuration: { c in
+                    c.arguments = args
+                    c.stdout = sink
+                }) else { return nil }
+                guard (try? await process.start()) != nil, let status = try? await process.wait() else { return nil }
+                try? await process.delete()
+                return (status.exitCode, sink.data)
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(timeout))
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func execData(_ arguments: [String], in service: String, limit: Int) async throws -> (Int32, String) {
         guard let pod else { throw PierError("the pod is not running") }
-        let out = LogBuffer(limit: 10_000)
+        let out = LogBuffer(limit: limit)
         let (target, args) = route(arguments, in: service)
         let process = try await pod.execInContainer(target, processID: "exec-\(UUID().uuidString.prefix(8))") { c in
             c.arguments = args
@@ -1290,4 +1362,23 @@ final class Meter: Sendable {
     static func seconds(_ d: Duration) -> String {
         String(format: "%.1f s", Double(d.components.seconds) + Double(d.components.attoseconds) / 1e18)
     }
+}
+
+/// Collects a command's output as bytes, up to a limit.
+final class ByteSink: Writer, Sendable {
+    private let buffer = Mutex(Data())
+    private let limit: Int
+
+    init(limit: Int) { self.limit = limit }
+
+    var data: Data { buffer.withLock { $0 } }
+
+    func write(_ data: Data) throws {
+        buffer.withLock { b in
+            guard b.count < limit else { return }
+            b.append(data.prefix(limit - b.count))
+        }
+    }
+
+    func close() throws {}
 }

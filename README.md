@@ -44,11 +44,11 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
   tabs and a full-screen mode. One button installs OpenSSH and tmux if you'd rather use
   an SSH client.
 - **An API for agents.** Give a service agent access and an agent in it (Claude Code, a
-  script) works the pod: `pier ps`, `pier logs db`, `pier exec db psql ...`, and at the top
-  tier `pier spawn alpine` for scratch containers of its own, which join the running pod
-  without a restart and go away after a while. Four tiers (off, observe, operate, admin);
-  each service gets a token, `/pier/AGENT.md` describing what it may do, the `pier` command
-  and a Claude Code skill. See [Agent API](#agent-api).
+  script) works the pod: `pier ps`, `pier logs db`, `pier exec db psql ...`, `pier cp`, and at
+  the top tier `pier spawn alpine` for containers of its own, which join the running pod
+  without a restart and stay until removed. Four tiers (off, observe, operate, admin); each
+  service gets a token, `/pier/AGENT.md` describing what it may do, the `pier` command and a
+  Claude Code skill. See [Agent API](#agent-api).
 - **Add services while the pod runs.** The VM boots with spare disk slots, so a new service
   (or an agent's container) joins in about a second instead of restarting the pod.
 - **Keeps running.** Pods keep going in the background (coarse location keep-alive, on by
@@ -123,9 +123,9 @@ A few details worth knowing:
 
 ## Agent API
 
-Turn on **Agent Access** in a service's settings. While the pod runs, Pier answers at
-`http://172.20.0.1:7070` on the pod's network (the network helper carries it to the app over
-vsock), and writes into the service:
+Turn on **Agent Access** in a service's settings (it needs the pod's default, a network per
+service). While the pod runs, Pier answers at `http://172.20.0.1:7070` on the pod's network
+(the network helper carries it to the app over vsock), and writes into the service:
 
 - `/pier/token`: the service's token, sent as `Authorization: Bearer <token>`;
 - `/pier/AGENT.md`: what this tier allows, the other services, every endpoint with examples;
@@ -134,14 +134,16 @@ vsock), and writes into the service:
 
 | Tier | Adds |
 |---|---|
-| Observe | `GET /v1/services`, `GET /v1/services/NAME/logs` |
-| Operate | `POST /v1/services/NAME/exec`, `start`, `stop`, `restart` (not its own service) |
+| Observe | `GET /v1/services`, `GET /v1/services/NAME`, `GET /v1/services/NAME/logs` |
+| Operate | `exec`, files in and out (`pier cp`), `start`, `stop`, `restart` (not its own service) |
 | Admin | `POST /v1/spawn`, `POST /v1/services/NAME/remove` (only containers it started) |
 
-An agent's containers are named after it (`agent-scan`), get the next address on the bridge
-and a name in the other services' `/etc/hosts`, and go away with their disks when their time
-is up (an hour unless asked, at most a day), when removed, or when the pod stops. Each agent
-may run four at a time, up to 1 GB each; Pier lists them under **Started by Agents**.
+An agent never touches another agent's containers, nor a service with more access than its
+own. Its containers are named after it (`agent-scan`), get the next address on the bridge and
+a name in the other services' `/etc/hosts`, and stay in the pod, across restarts, until the
+agent or you remove them (an agent may ask for one to go by itself after a while). Each agent
+may have four, 32 MB to 1 GB each; one disk slot always stays free for you. Pier lists them
+under **Started by Agents**. Containers of different agents share one network for now.
 
 ## Requirements
 
@@ -213,8 +215,9 @@ codesign -f -s - --entitlements pierctl.entitlements .build/debug/pierctl
 - **Building images.** Dropping a Dockerfile, or `build:` in Compose, isn't supported yet.
   Use an image from a registry.
 - A service added while the pod runs takes one of four spare disk slots; with none left, or
-  when a service is removed or changed, the pod restarts. Its ports reach the other services,
-  not the iPad, until the pod restarts.
+  when a service is removed or changed by hand, the pod restarts. Its ports reach the other
+  services, not the iPad, until the pod restarts.
+- Agents' containers share the pod's one network; separate networks per agent come later.
 - Forwarded ports are TCP only.
 - Bind mounts are copies taken at import, not live folders.
 

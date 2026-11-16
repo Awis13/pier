@@ -78,6 +78,11 @@ public struct ServiceSpec: Codable, Hashable, Sendable, Identifiable {
     /// What an agent in this service may do with the pod through the Agent
     /// API (see `AgentAPI.swift`); unset is off.
     public var agentAccess: AgentTier?
+    /// The service whose agent started this one through the Agent API; it
+    /// stays in the pod like any other until removed.
+    public var spawnedBy: String?
+    /// When an agent's container goes away by itself, if it asked for that.
+    public var expires: Date?
 
     public var id: String { name }
 

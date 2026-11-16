@@ -42,6 +42,8 @@ final class PodModel {
                 }
                 model?.snapshot = snap
             }
+        } onServices: { event in
+            Task { @MainActor in model?.servicesChanged(event) }
         }
         model = self
         if Checks.has("--demo-pod") {
@@ -205,12 +207,29 @@ final class PodModel {
     /// Removes a container an agent started, with its disk.
     func removeSpawned(_ name: String) {
         for t in terminals where t.service == name { closeTerminal(t) }
+        guard isActive else {
+            spec.services.removeAll { $0.name == name }
+            Task { try? await runner.reset(service: name) }
+            return
+        }
         Task {
             do {
                 try await runner.removeService(name, deleteDisk: true)
             } catch {
                 AppLog.write("pier: removing \(name): \(error)")
             }
+        }
+    }
+
+    /// An agent started a container (kept in the pod like any service) or a
+    /// service went from inside the pod.
+    func servicesChanged(_ event: ServiceEvent) {
+        switch event {
+        case .added(let s):
+            if !spec.services.contains(where: { $0.name == s.name }) { spec.services.append(s) }
+        case .removed(let name):
+            for t in terminals where t.service == name { closeTerminal(t) }
+            spec.services.removeAll { $0.name == name }
         }
     }
 

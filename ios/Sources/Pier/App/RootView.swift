@@ -31,7 +31,7 @@ struct RootView: View {
                     }
                 }
                 Section("Services") {
-                    ForEach(pod.spec.services) { service in
+                    ForEach(pod.spec.services.filter { $0.spawnedBy == nil }) { service in
                         ServiceRow(service: service)
                             .tag(service.name)
                             .contextMenu { ServiceMenu(service: service) }
@@ -40,20 +40,22 @@ struct RootView: View {
                         pod.spec.services.move(fromOffsets: from, toOffset: to)
                     }
                 }
-                if !pod.snapshot.spawned.isEmpty {
+                let spawned = pod.spec.services.filter { $0.spawnedBy != nil }
+                if !spawned.isEmpty {
                     Section {
-                        ForEach(pod.snapshot.spawned.sorted { $0.key < $1.key }, id: \.key) { name, info in
-                            SpawnedRow(name: name, info: info, state: pod.snapshot.services[name]) { pod.removeSpawned(name) }
+                        ForEach(spawned) { service in
+                            SpawnedRow(service: service, state: pod.snapshot.services[service.name]) { pod.removeSpawned(service.name) }
+                                .tag(service.name)
                         }
-                        if pod.snapshot.spawned.count > 1 {
+                        if spawned.count > 1 {
                             Button("Remove All", role: .destructive) {
-                                for name in pod.snapshot.spawned.keys { pod.removeSpawned(name) }
+                                for s in spawned { pod.removeSpawned(s.name) }
                             }
                         }
                     } header: {
                         Text("Started by Agents")
                     } footer: {
-                        Text("Containers agents started through Pier's API. Each goes away when its time is up or the pod stops, with its disk.")
+                        Text("Containers agents started through Pier's API. They stay in the pod until the agent or you remove them; removing one deletes its disk.")
                     }
                 }
             }
@@ -448,7 +450,7 @@ struct ServiceDetail: View {
             }
         }
         .onChange(of: pod.snapshot.pod, initial: true) {
-            if pod.snapshot.pod == .running, Checks.arguments.contains("--fullscreen"), Checks.has("--fullscreen") {
+            if pod.snapshot.pod == .running, Checks.has("--fullscreen") {
                 openFullScreen()
             }
         }
@@ -796,7 +798,7 @@ struct NetworkView: View {
 }
 
 /// Launch arguments for checking Pier without touch (`--autostart`,
-/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`, `--split`, `--suggest-test`, `--switcher`). They count only when
+/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`, `--split`, `--suggest-test`, `--switcher`, `--fullscreen`, `--agent-access NAME=TIER`). They count only when
 /// the launch also sets PIER_CHECKS=1, which tapping the icon never does, and
 /// each acts once per launch.
 enum Checks {
@@ -819,10 +821,10 @@ enum Checks {
 }
 
 
-/// A container an agent started: who asked, what it runs, when it goes.
+/// A container an agent started: who asked, what it runs, when it goes if
+/// it asked for that.
 struct SpawnedRow: View {
-    let name: String
-    let info: SpawnInfo
+    let service: ServiceSpec
     let state: ServiceState?
     let remove: () -> Void
 
@@ -830,12 +832,12 @@ struct SpawnedRow: View {
         HStack(spacing: 10) {
             Circle().fill(state == .running ? Color.green : Color.secondary).frame(width: 8, height: 8)
             VStack(alignment: .leading, spacing: 2) {
-                Text(name).font(.body.monospaced()).lineLimit(1)
+                Text(service.name).font(.body.monospaced()).lineLimit(1)
                 Group {
-                    if let e = info.expires {
-                        Text("by \(info.owner) · \(info.image) · until ") + Text(e, style: .time)
+                    if let e = service.expires {
+                        Text("by \(service.spawnedBy ?? "") · \(service.image) · until ") + Text(e, style: .time)
                     } else {
-                        Text("by \(info.owner) · \(info.image)")
+                        Text("by \(service.spawnedBy ?? "") · \(service.image)")
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -844,7 +846,7 @@ struct SpawnedRow: View {
             Button(role: .destructive, action: remove) { Image(systemName: "xmark.circle.fill") }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .accessibilityLabel("Remove \(name)")
+                .accessibilityLabel("Remove \(service.name)")
         }
         .swipeActions { Button("Remove", role: .destructive, action: remove) }
         .contextMenu { Button("Remove", systemImage: "trash", role: .destructive, action: remove) }
