@@ -372,6 +372,23 @@ extension PodRunner {
                 } catch {
                     return .error(500, "\(error)")
                 }
+            case "ports":
+                // Publishes ports of a container on the iPad, at once.
+                if let denied = need(.admin) { return denied }
+                guard target.spawnedBy == caller else {
+                    return .error(403, "\(name) is not a container \(caller) started; ask the user to publish its ports in Pier")
+                }
+                guard let ports = Self.ports(r.json["ports"]) else {
+                    return .error(400, "send {\"ports\": [\"8080:80\"]} (iPad port:container port; an empty list unpublishes)")
+                }
+                if let clash = spec.services.first(where: { $0.name != name && $0.ports.contains { p in ports.contains { $0.host == p.host } } }) {
+                    return .error(409, "a port asked for is \(clash.name)'s")
+                }
+                var changed = target
+                changed.ports = ports
+                guard await setPorts(changed) else { return .error(409, "these ports need the pod restarted; ask the user") }
+                if let now = currentSpec?.services.first(where: { $0.name == name }) { onServices(.changed(now)) }
+                return .ok(describe(currentSpec?.services.first { $0.name == name } ?? changed))
             case "remove":
                 if let denied = need(.admin) { return denied }
                 guard target.spawnedBy == caller else {
@@ -530,6 +547,19 @@ extension PodRunner {
     /// A container of the caller's own, named `<caller>-<name>`: it stays in
     /// the pod (across restarts too) until the agent or the user removes it,
     /// or until its time is up if it asked for one.
+    /// "8080:80" or "8080" (the same both sides), from a JSON list.
+    static func ports(_ value: Any?) -> [PortMapping]? {
+        guard let list = value as? [Any] else { return nil }
+        var out: [PortMapping] = []
+        for item in list {
+            let text = (item as? String) ?? (item as? Int).map(String.init) ?? ""
+            let parts = text.split(separator: ":").map { UInt16($0) }
+            guard (1...2).contains(parts.count), let host = parts[0], host > 0, let c = parts.last!, c > 0 else { return nil }
+            out.append(PortMapping(host: host, container: c))
+        }
+        return out
+    }
+
     private func spawn(_ body: [String: Any], for caller: String) async -> AgentResponse {
         guard let image = body["image"] as? String, !image.isEmpty else {
             return .error(400, "send at least {\"image\": \"alpine:3.20\"}")
@@ -575,6 +605,13 @@ extension PodRunner {
         service.aliases = body["name"] is String && cleaned != name ? [cleaned] : nil
         service.spawnedBy = caller
         service.expires = expires
+        if body["ports"] != nil {
+            guard let ports = Self.ports(body["ports"]) else { return .error(400, "ports: [\"8080:80\"] (iPad port:container port)") }
+            if let clash = currentSpec?.services.first(where: { $0.ports.contains { p in ports.contains { $0.host == p.host } } }) {
+                return .error(409, "a port asked for is \(clash.name)'s")
+            }
+            service.ports = ports
+        }
         do {
             try await addService(service)
         } catch {
@@ -651,8 +688,9 @@ enum AgentDocs {
         if tier >= .admin {
             md += """
 
-            pier spawn IMAGE [--name N] [--mem MB] [--ttl MIN] [-- COMMAND...]
+            pier spawn IMAGE [--name N] [--mem MB] [--ttl MIN] [--port 8080:80] [-- COMMAND...]
                                              # a container of your own, named \(service)-N
+            pier publish NAME 8080:80 ...    # its ports on the iPad, at once (none: unpublish)
             pier rm NAME                     # remove one you started
             """
         }
@@ -696,7 +734,9 @@ enum AgentDocs {
             - Without a command a container just stays up, for `pier exec`; `"useImageCommand": true`
               runs the image's own command.
             - Each gets the next address on the bridge and its name in `/etc/hosts` of the running
-              services. Its ports reach the other services, not the iPad, until the pod restarts.
+              services. `--port 8080:80` (`"ports": ["8080:80"]`) publishes a port on the iPad at once:
+              `http://localhost:8080` in its Safari, and on the network if the user allowed that;
+              `pier publish NAME 8080:80` does it for one already running.
             - Disk slots for containers added while the pod runs are few, and one stays free for the
               user; `pier me` shows how many are left. A pod restart frees them.
             - Clean up after yourself: `pier rm` what you no longer need.
@@ -819,10 +859,12 @@ enum AgentDocs {
       cp) [ $# -eq 2 ] || { echo "pier cp NAME:/path LOCAL  or  pier cp LOCAL NAME:/path" >&2; exit 2; }; copy "$1" "$2" ;;
       start|stop|restart) [ -n "$1" ] || { echo "pier $cmd NAME" >&2; exit 2; }; req POST "/v1/services/$1/$cmd" ;;
       spawn)
-        [ -n "$1" ] || { echo "pier spawn IMAGE [--name N] [--mem MB] [--ttl MIN] [-- COMMAND...]" >&2; exit 2; }
+        [ -n "$1" ] || { echo "pier spawn IMAGE [--name N] [--mem MB] [--ttl MIN] [--port 8080:80] [-- COMMAND...]" >&2; exit 2; }
         body="\"image\":\"$(json_str "$1")\""; shift
+        ports=""
         while [ $# -gt 0 ]; do
           case "$1" in
+            --port) ports="${ports:+$ports,}\"$2\""; shift 2; continue ;;
             --name) body="$body,\"name\":\"$(json_str "$2")\""; shift 2 ;;
             --ttl) body="$body,\"ttlMinutes\":$2"; shift 2 ;;
             --mem) body="$body,\"memoryMiB\":$2"; shift 2 ;;
@@ -830,7 +872,12 @@ enum AgentDocs {
             *) echo "pier spawn: unknown option $1" >&2; exit 2 ;;
           esac
         done
+        [ -n "$ports" ] && body="$body,\"ports\":[$ports]"
         req POST /v1/spawn "{$body}" ;;
+      publish) [ -n "$1" ] || { echo "pier publish NAME [8080:80 ...]" >&2; exit 2; }
+        name="$1"; shift; ports=""
+        for p in "$@"; do ports="${ports:+$ports,}\"$p\""; done
+        req POST "/v1/services/$name/ports" "{\"ports\":[$ports]}" ;;
       rm|remove) [ -n "$1" ] || { echo "pier rm NAME" >&2; exit 2; }; req POST "/v1/services/$1/remove" ;;
       *) sed -n '/^## The `pier` command/,/^## The HTTP API/p' /pier/AGENT.md | sed '$d' ;;
     esac

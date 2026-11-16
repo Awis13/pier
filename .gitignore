@@ -3,3 +3,4 @@ Frameworks/
 *.xcodeproj/
 DerivedData/
 Sources/PierCore/Resources/vmexec-overlay.tar.gz
+Sources/PierCore/Resources/libggml-rpc.so

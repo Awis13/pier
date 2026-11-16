@@ -142,14 +142,24 @@ final class PodModel {
         if snapshot.pod == .running, Set(spec.services.map(\.name)).isSuperset(of: before) {
             let added = spec.services.filter { !before.contains($0.name) }
             let changed = spec.services.filter { s in old.first { $0.name == s.name }.map { $0 != s } ?? false }
-            let onlyAccess = changed.allSatisfy { s in
+            // Agent access and ports change while the pod runs.
+            let live = changed.allSatisfy { s in
                 guard var o = old.first(where: { $0.name == s.name }) else { return false }
                 o.agentAccess = s.agentAccess
+                o.ports = s.ports
                 return o == s
             }
-            if onlyAccess {
+            if live {
                 Task {
-                    for s in changed { await runner.setAgentAccess(s) }
+                    for s in changed {
+                        await runner.setAgentAccess(s)
+                        if s.ports != old.first(where: { $0.name == s.name })?.ports, !(await runner.setPorts(s)) {
+                            AppLog.write("pier: \(s.name)'s ports need a restart")
+                            await runner.stop()
+                            await run(jit: jit)
+                            return
+                        }
+                    }
                     for s in added {
                         do {
                             try await runner.addService(s)
@@ -230,6 +240,8 @@ final class PodModel {
         case .removed(let name):
             for t in terminals where t.service == name { closeTerminal(t) }
             spec.services.removeAll { $0.name == name }
+        case .changed(let s):
+            if let i = spec.services.firstIndex(where: { $0.name == s.name }) { spec.services[i] = s }
         }
     }
 
@@ -295,6 +307,12 @@ final class PodModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))
                 tick &+= 1
+                // The pod's log (the guest's console among it) is kept on disk
+                // too, so it can be read after a hang or a crash.
+                if tick % 25 == 0 {
+                    let text = runner.podLog.text
+                    Task.detached { try? text.write(to: URL.cachesDirectory.appendingPathComponent("pod.log"), atomically: true, encoding: .utf8) }
+                }
             }
         }
     }
@@ -356,6 +374,8 @@ final class PodModel {
     /// The service whose editor or delete question is open (set from its menu).
     var editRequest: String?
     var deleteRequest: String?
+    /// The service whose disk is to be made again (asked from its menu).
+    var resetRequest: String?
 
     /// Services SSH is being installed in right now.
     var installingSSH: Set<String> = []

@@ -94,6 +94,8 @@ public struct SpawnInfo: Sendable, Equatable {
 public enum ServiceEvent: Sendable {
     case added(ServiceSpec)
     case removed(String)
+    /// Its ports changed (an agent published one).
+    case changed(ServiceSpec)
 }
 
 /// How the pod's virtual machine runs its CPUs.
@@ -141,6 +143,12 @@ public actor PodRunner {
     var agentTokens: [String: String] = [:]
     var spawnTimers: [String: Task<Void, Never>] = [:]
     var agentListener: VsockListener?
+    /// Containers' connections to the GPU, over vsock.
+    var gpuListener: VsockListener?
+    /// Ports the app publishes itself (see LivePorts.swift), by host port,
+    /// and the ones the VM forwards since it booted, by service.
+    var livePorts: [UInt16: LivePort] = [:]
+    var bootPorts: [String: Set<UInt16>] = [:]
     /// The pod's hosts file and network kind, for services added later.
     private var bootHosts: Hosts?
     private var restarts: [String: Int] = [:]
@@ -168,6 +176,9 @@ public actor PodRunner {
     public static let defaultInitImage = "ghcr.io/apple/containerization/vminit:0.54.0"
     static let podID = "pier"
     static let workVolume = "work"
+    /// A service's root filesystem: room for big images and what they keep
+    /// (models, packages); sparse, so the iPad gives only what is written.
+    static let rootfsGiB: UInt64 = 32
     static let journal = EXT4.JournalConfig(defaultMode: .ordered)
     static let arm64 = ContainerizationOCI.Platform(arch: "arm64", os: "linux", variant: nil)
 
@@ -330,7 +341,7 @@ public actor PodRunner {
             try? FileManager.default.removeItem(at: path)
             setService(name, .preparing("Unpacking"))
             let manifest = try await image.manifest(for: Self.arm64)
-            say(name, "unpacking \(manifest.layers.count) layers into an ext4 root filesystem (8 GB, sparse)")
+            say(name, "unpacking \(manifest.layers.count) layers into an ext4 root filesystem (\(Self.rootfsGiB) GB, sparse)")
             let meter = Meter(label: "unpacked", unit: .bytes) { [weak self] line in
                 self?.say(name, line)
                 self?.setService(name, .preparing(line))
@@ -339,7 +350,7 @@ public actor PodRunner {
             // Journalled (ordered, as Linux mounts ext4 by default): a pod that
             // stops without unmounting, when iOS ends Pier say, keeps a
             // consistent filesystem instead of blocks given to two files.
-            let unpacker = EXT4Unpacker(capacityInBytes: 8.gib(), journal: Self.journal)
+            let unpacker = EXT4Unpacker(capacityInBytes: Self.rootfsGiB.gib(), journal: Self.journal)
             _ = try await unpacker.unpack(image, for: Self.arm64, at: path, progress: meter.handler)
             try digest.write(to: stamp, atomically: true, encoding: .utf8)
             say(name, "unpacked in \(Meter.seconds(ContinuousClock.now - started)): \(meter.summary)")
@@ -416,6 +427,13 @@ public actor PodRunner {
             setPod(.preparing("Preparing \(service.name)"))
             try checkCancelled()
             let (rootfs, config) = try await rootfs(for: service)
+            // A full disk fails the whole VM as it boots: that service waits.
+            if let space = Self.ext4Space(of: URL(fileURLWithPath: rootfs.source)), space.free < 64 << 20 {
+                let why = "its disk is full (\(space.total >> 30) GB): Reset Disk in its menu makes it again from the image"
+                setService(service.name, .failed(why))
+                say(service.name, "not started: \(why)")
+                continue
+            }
             prepared.append((service, rootfs, config))
             setService(service.name, .starting)
         }
@@ -430,6 +448,7 @@ public actor PodRunner {
         }
         // With networks of their own, the VM takes each port at the same
         // number and the helper sends it on to its service.
+        recordBootPorts(spec)
         let forwards = spec.services.flatMap { s in
             (s.ports + (s.sshPort.map { [PortMapping(host: $0, container: $0)] } ?? [])).map {
                 CratePortForward(hostAddress: bind, hostPort: $0.host, guestPort: separate ? $0.host : $0.container)
@@ -537,6 +556,7 @@ public actor PodRunner {
         update { $0.bootSeconds = Double(booted.components.seconds) + Double(booted.components.attoseconds) / 1e18 }
         podLog.note("virtual machine up in \(booted)")
         try await prepareVolumes(spec, in: pod)
+        if spec.services.contains(where: { $0.gpu == true }) { await startGPU(in: pod) }
 
         if separate {
             try await pod.startContainer(PodNetwork.helper)
@@ -644,6 +664,13 @@ public actor PodRunner {
         if service.mountsWork {
             c.mounts.append(.sharedMount(name: Self.workVolume, destination: "/work"))
         }
+        if service.gpu == true, GPUShim.data != nil {
+            c.mounts.append(.sharedMount(name: Self.workVolume, destination: GPUShim.directory, options: ["ro"], subpath: GPUShim.volumePath))
+            c.process.environmentVariables.append(contentsOf: [
+                "GGML_BACKEND_PATH=\(GPUShim.directory)/libggml-rpc.so",
+                "PIER_GPU=\(GPUServer.endpoint)",
+            ])
+        }
     }
 
     /// Adds a service to the running pod without restarting it: its rootfs
@@ -683,6 +710,7 @@ public actor PodRunner {
             say(name, "failed to start: \(error)")
             throw error
         }
+        await publishPorts(of: service)
         // The others learn its name.
         if running.usesSeparateNetworks {
             let line = ([PodNetwork.address(index), name] + (service.aliases ?? [])).joined(separator: " ")
@@ -704,6 +732,7 @@ public actor PodRunner {
         if separate {
             hosts.entries.append(Hosts.Entry(ipAddress: address, hostnames: [service.name] + (service.aliases ?? [])))
         }
+        if service.gpu == true { await startGPU(in: pod) }
         let cpus = spec.cpus
         let finalHosts = hosts
         try await pod.addContainer(service.name, rootfs: rootfs) { c in
@@ -727,6 +756,7 @@ public actor PodRunner {
         if let state = snapshot.services[name], state != .stopped {
             try await stopService(name)
         }
+        await unpublishAll(of: name)
         try await pod.removeContainer(name)
         hotAdded.remove(name)
         netIndex[name] = nil
@@ -959,6 +989,9 @@ public actor PodRunner {
         guard let pod else { return }
         setPod(.stopping)
         stopAgentAPI()
+        try? gpuListener?.finish()
+        closeLivePorts()
+        gpuListener = nil
         restartTasks.values.forEach { $0.cancel() }
         restartTasks.removeAll()
         // Everything written reaches the disks before the machine goes.
@@ -1381,4 +1414,60 @@ final class ByteSink: Writer, Sendable {
     }
 
     func close() throws {}
+}
+
+extension PodRunner {
+    /// The GPU server, and its backend in /work for containers to mount:
+    /// at boot, or when a service with GPU on joins the running pod.
+    func startGPU(in pod: LinuxPod) async {
+        if let shim = GPUShim.data {
+            do {
+                try await pod.prepareVolume(Self.workVolume, directories: [GPUShim.volumePath],
+                                            files: [(GPUShim.volumePath + "/libggml-rpc.so", shim, 0o755)])
+            } catch {
+                podLog.note("GPU: could not put its backend in /work: \(error)")
+            }
+        }
+        let log = podLog
+        let budget = GPUServer.budget(vmMiB: currentSpec?.memoryMiB ?? 0)
+        GPUServer.start(cache: root.appendingPathComponent("gpu-cache"), budget: budget) { log.note($0) }
+        guard gpuListener == nil else { return }
+        do {
+            let listener = try await pod.withVirtualMachineInstance { try $0.listen(UInt32(GPUServer.port)) }
+            gpuListener = listener
+            Task.detached {
+                for await connection in listener {
+                    let fd = dup(connection.fileDescriptor)
+                    try? connection.close()
+                    if fd >= 0 { GPUServer.bridge(fd) }
+                }
+            }
+        } catch {
+            podLog.note("GPU: could not listen on vsock: \(error)")
+        }
+    }
+}
+
+/// Pier's RPC backend for ggml in the containers (gpu/pier-gpu.cpp, built
+/// against the ggml of the Ollama release it serves).
+enum GPUShim {
+    static let directory = "/usr/local/lib/pier"
+    static let volumePath = ".pier/gpu"
+    static let data: Data? = Bundle.module.url(forResource: "libggml-rpc", withExtension: "so").flatMap { try? Data(contentsOf: $0) }
+}
+
+extension PodRunner {
+    /// Free and total bytes of an ext4 image, from its superblock (as the
+    /// guest last left it).
+    static func ext4Space(of url: URL) -> (free: UInt64, total: UInt64)? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: 1024)) != nil, let sb = try? h.read(upToCount: 1024), sb.count == 1024 else { return nil }
+        func u32(_ o: Int) -> UInt64 { UInt64(sb[o]) | UInt64(sb[o + 1]) << 8 | UInt64(sb[o + 2]) << 16 | UInt64(sb[o + 3]) << 24 }
+        guard sb[0x38] == 0x53, sb[0x39] == 0xEF else { return nil }      // the ext4 magic
+        let blockSize = UInt64(1024) << u32(0x18)
+        let total = (u32(0x04) | u32(0x150) << 32) * blockSize
+        let free = (u32(0x0C) | u32(0x158) << 32) * blockSize
+        return (free, total)
+    }
 }
