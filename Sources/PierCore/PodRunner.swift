@@ -558,6 +558,7 @@ public actor PodRunner {
                 setService(service.name, .running)
                 await useHTTPSRepositories(in: service.name)
                 await applyScanning(service)
+                await runStartup(service)
                 if let port = service.sshPort {
                     let result = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
                     if let (code, out) = result, code == 0 {
@@ -831,6 +832,20 @@ public actor PodRunner {
         exec /usr/bin/nmap -PE -PS21,22,23,25,53,80,110,139,443,445,3389,5900,8000,8080,8443 "$@"
         """
 
+    /// The service's startup commands, each in the background, their output
+    /// in /var/log/pier-startup.log inside it and in its log here.
+    func runStartup(_ service: ServiceSpec) async {
+        let lines = (service.startup ?? []).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("#") }
+        guard !lines.isEmpty else { return }
+        for line in lines {
+            say(service.name, "on start: \(line)")
+            let quoted = "'" + line.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            let script = "mkdir -p /var/log; echo \"== $(date '+%F %T') \(line.replacingOccurrences(of: "\"", with: "'"))\" >> /var/log/pier-startup.log; nohup sh -c \(quoted) >> /var/log/pier-startup.log 2>&1 < /dev/null & echo started"
+            let result = try? await exec(["/bin/sh", "-c", script], in: service.name)
+            if result?.0 != 0 { say(service.name, "on start failed: \(result?.1 ?? "")") }
+        }
+    }
+
     /// Puts the nmap wrapper in place, or takes Pier's away, as the option says.
     func applyScanning(_ service: ServiceSpec) async {
         let w = "/usr/local/bin/nmap"
@@ -996,6 +1011,7 @@ public actor PodRunner {
         setService(service.name, .running)
         await useHTTPSRepositories(in: service.name)
                 await applyScanning(service)
+                await runStartup(service)
         if let port = service.sshPort {
             _ = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
         }

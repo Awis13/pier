@@ -16,6 +16,7 @@ struct ServiceEditor: View {
     @State private var memory: UInt64 = 512
     @State private var mountsWork = true
     @State private var honestScanning = false
+    @State private var startup = ""
     @State private var showingCatalog = false
     @State private var picked: String?
 
@@ -51,6 +52,15 @@ struct ServiceEditor: View {
                     if let problem {
                         Text(problem).foregroundStyle(.red)
                     }
+                }
+                Section {
+                    TextField("e.g. /usr/sbin/sshd", text: $startup, axis: .vertical)
+                        .lineLimit(2...8)
+                        .textInputAutocapitalization(.never).autocorrectionDisabled().font(.body.monospaced())
+                } header: {
+                    Text("On Start")
+                } footer: {
+                    Text("One command a line, run in the background every time the service starts: daemons a container has no init to start, like sshd or tailscaled. Output goes to /var/log/pier-startup.log.")
                 }
                 Section {
                     Toggle("Honest network scans", isOn: $honestScanning)
@@ -128,6 +138,7 @@ struct ServiceEditor: View {
         memory = s.memoryMiB
         mountsWork = s.mountsWork
         honestScanning = s.honestScanning ?? false
+        startup = (s.startup ?? []).joined(separator: "\n")
     }
 
     private var parsedPorts: [PortMapping]? {
@@ -164,6 +175,8 @@ struct ServiceEditor: View {
         s.memoryMiB = memory
         s.mountsWork = mountsWork
         s.honestScanning = honestScanning ? true : nil
+        let lines = startup.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        s.startup = lines.isEmpty ? nil : lines
         return s
     }
 }

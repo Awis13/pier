@@ -72,6 +72,9 @@ public struct ServiceSpec: Codable, Hashable, Sendable, Identifiable {
     /// nmap's host discovery uses probes that get through the VM's NAT
     /// honestly (see `PodRunner.nmapWrapper`).
     public var honestScanning: Bool?
+    /// Shell commands run in the background each time the service starts:
+    /// daemons a container has no init to start (sshd, tailscaled, ...).
+    public var startup: [String]?
 
     public var id: String { name }
 
