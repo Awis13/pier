@@ -8,6 +8,7 @@ tag=${1:-b12177}
 here=$(cd "$(dirname "$0")/.." && pwd)
 work=${WORK:-$here/.build/ggml-$tag}
 [ -d "$work/src/.git" ] || git clone -q --depth 1 --branch "$tag" https://github.com/ggml-org/llama.cpp "$work/src"
+python3 "$here/gpu/rpc-budget.py" "$work/src/ggml/src/ggml-rpc/ggml-rpc.cpp"
 common="-DBUILD_SHARED_LIBS=OFF -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF
         -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DCMAKE_OSX_ARCHITECTURES=arm64 -DLLAMA_CURL=OFF
         -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF -DLLAMA_BUILD_TOOLS=OFF"
@@ -20,6 +21,10 @@ cmake --build "$work/ios" --config Release $targets -- -quiet >/dev/null
 mkdir -p "$work/headers"
 cp "$work"/src/ggml/include/ggml.h "$work"/src/ggml/include/ggml-alloc.h "$work"/src/ggml/include/ggml-backend.h \
    "$work"/src/ggml/include/ggml-cpu.h "$work"/src/ggml/include/ggml-metal.h "$work"/src/ggml/include/ggml-rpc.h "$work/headers/"
+sed -i '' 's|^GGML_BACKEND_API ggml_backend_reg_t ggml_backend_rpc_add_server(const char \* endpoint);|&\
+\
+// Pier: what clients may allocate on a server started in this process (0: no limit).\
+GGML_BACKEND_API void ggml_backend_rpc_set_memory_budget(size_t bytes);|' "$work/headers/ggml-rpc.h"
 cat > "$work/headers/module.modulemap" <<'MAP'
 module ggml {
     header "ggml.h"

@@ -33,8 +33,24 @@ public enum GPUServer {
     /// Starts the server once, on a thread of its own (it never returns).
     /// `cache` keeps tensors a client sent before, so a model loads faster
     /// the next time.
+    /// What containers may hold on the GPU: on an iPad, the memory the VM and
+    /// iPadOS leave (the GPU shares it), so a model too big for it is split
+    /// with the CPU instead of getting the app ended; on a Mac, no limit.
+    public static func budget(vmMiB: UInt64) -> Int {
+        if let mib = ProcessInfo.processInfo.environment["PIER_GPU_BUDGET_MIB"].flatMap(Int.init) { return mib << 20 }
+        #if os(iOS)
+        let reserve: UInt64 = 3 << 30          // iPadOS, the app, crate's JIT code
+        let total = ProcessInfo.processInfo.physicalMemory
+        let used = vmMiB << 20 + reserve
+        return total > used + (512 << 20) ? Int(total - used) : 512 << 20
+        #else
+        return 0
+        #endif
+    }
+
     @discardableResult
-    public static func start(cache: URL, log: @escaping @Sendable (String) -> Void) -> Bool {
+    public static func start(cache: URL, budget: Int, log: @escaping @Sendable (String) -> Void) -> Bool {
+        ggml_backend_rpc_set_memory_budget(budget)
         let first = started.withLock { s in
             defer { s = true }
             return !s
@@ -56,7 +72,7 @@ public enum GPUServer {
         thread.name = "pier.gpu"
         thread.stackSize = 8 << 20
         thread.start()
-        log("GPU: \(name) for containers at \(endpoint)")
+        log("GPU: \(name) for containers at \(endpoint)" + (budget > 0 ? ", up to \(budget >> 20) MB" : ""))
         return true
     }
 }

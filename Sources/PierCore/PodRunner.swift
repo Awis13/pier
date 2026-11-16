@@ -1415,7 +1415,8 @@ extension PodRunner {
             }
         }
         let log = podLog
-        GPUServer.start(cache: root.appendingPathComponent("gpu-cache")) { log.note($0) }
+        let budget = GPUServer.budget(vmMiB: currentSpec?.memoryMiB ?? 0)
+        GPUServer.start(cache: root.appendingPathComponent("gpu-cache"), budget: budget) { log.note($0) }
     }
 }
 
