@@ -151,7 +151,7 @@ final class Suggester {
                              width: min(room, ghost.sizeThatFits(.zero).width), height: cell.height)
         ghost.isHidden = room <= 0
         v.bringSubviewToFront(ghost)
-        remainder = rest.joined(separator: " "))) full \"\(full)\" input row \(inputRow ?? -1) cursor \(cx),\(cy) top \(liveTop(v, t)) trimmed \(t.buffer.totalLinesTrimmed)") }
+        remainder = rest
     }
 
     /// The typed text from where typing starts (the column of the B mark,
