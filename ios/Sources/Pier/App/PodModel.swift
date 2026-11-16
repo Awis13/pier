@@ -295,6 +295,12 @@ final class PodModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(400))
                 tick &+= 1
+                // The pod's log (the guest's console among it) is kept on disk
+                // too, so it can be read after a hang or a crash.
+                if tick % 25 == 0 {
+                    let text = runner.podLog.text
+                    Task.detached { try? text.write(to: URL.cachesDirectory.appendingPathComponent("pod.log"), atomically: true, encoding: .utf8) }
+                }
             }
         }
     }

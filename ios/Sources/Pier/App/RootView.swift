@@ -496,7 +496,14 @@ struct PodLogView: View {
                 .navigationTitle("Pod Log")
                 .toolbar {
                     ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
-                    ToolbarItem(placement: .secondaryAction) {
+                    // On the bar itself, not in its overflow menu: a share sheet
+                    // has to come from a button it can point at.
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Copy", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = pod.runner.podLog.text + "\n\n" + AppLog.contents()
+                        }
+                    }
+                    ToolbarItem(placement: .topBarLeading) {
                         ShareLink(item: pod.runner.podLog.text + "\n\n" + AppLog.contents())
                     }
                 }
