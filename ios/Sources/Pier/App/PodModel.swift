@@ -33,11 +33,25 @@ final class PodModel {
         }
         var model: PodModel?
         runner = try! PodRunner(root: Self.dataDirectory, kernel: kernel) { snap in
-            Task { @MainActor in model?.snapshot = snap }
+            Task { @MainActor in
+                if let model, model.snapshot.pod != .running, snap.pod == .running {
+                    // Whether the agent API came up, for pier.log.
+                    for line in model.runner.podLog.text.split(separator: "\n") where line.contains("agent API") {
+                        AppLog.write("pod: \(line)")
+                    }
+                }
+                model?.snapshot = snap
+            }
         }
         model = self
         if Checks.has("--demo-pod") {
             spec = Templates.demoPod
+        }
+        // --agent-access NAME=TIER (checking without touching the settings).
+        if let arg = Checks.take("--agent-access"), let eq = arg.firstIndex(of: "="),
+           let tier = AgentTier(rawValue: String(arg[arg.index(after: eq)...])),
+           let i = spec.services.firstIndex(where: { $0.name == String(arg[..<eq]) }) {
+            spec.services[i].agentAccess = tier == .off ? nil : tier
         }
         AppLog.write("pier: \(spec.services.count) services in the pod")
     }

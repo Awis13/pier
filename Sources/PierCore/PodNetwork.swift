@@ -26,7 +26,7 @@ struct PodNetwork {
     /// The helper's command: the tools it needs, then waiting.
     static let helperCommand = [
         "/bin/sh", "-c",
-        "apk add --no-cache iproute2 iptables iptables-legacy util-linux-misc socat >/tmp/apk.log 2>&1; touch /tmp/pier-net-ready; exec sleep infinity",
+        "sed -i 's#^http:#https:#' /etc/apk/repositories; apk add --no-cache iproute2 iptables iptables-legacy util-linux-misc socat >/tmp/apk.log 2>&1; touch /tmp/pier-net-ready; exec sleep infinity",
     ]
 
     /// iptables for the kernel's legacy tables (the VM's kernel has no nftables).

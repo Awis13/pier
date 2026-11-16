@@ -166,7 +166,7 @@ extension PodRunner {
                     }
                 }
             }
-            let relay = "killall socat 2>/dev/null; nohup socat TCP-LISTEN:\(AgentHTTP.port),bind=\(PodNetwork.gateway),reuseaddr,fork VSOCK-CONNECT:2:\(AgentHTTP.port) >/tmp/agent-api.log 2>&1 < /dev/null & echo started"
+            let relay = "command -v socat >/dev/null || { echo no socat:; tail -3 /tmp/apk.log; exit 1; }; killall socat 2>/dev/null; nohup socat TCP-LISTEN:\(AgentHTTP.port),bind=\(PodNetwork.gateway),reuseaddr,fork VSOCK-CONNECT:2:\(AgentHTTP.port) >/tmp/agent-api.log 2>&1 < /dev/null & echo started"
             let (code, out) = try await exec(["/bin/sh", "-c", relay], in: PodNetwork.helper)
             podLog.note(code == 0 ? "agent API on \(AgentHTTP.address)" : "agent API did not start: \(out)")
         } catch {
