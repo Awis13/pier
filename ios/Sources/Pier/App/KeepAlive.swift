@@ -17,6 +17,9 @@ final class KeepAlive: NSObject, ObservableObject, CLLocationManagerDelegate {
 
     private let manager = CLLocationManager()
     private var terminals = 0
+    /// Keeps background location going with When In Use permission even with
+    /// no window on screen (closing every window must not stop the pod).
+    private var session: CLBackgroundActivitySession?
 
     override init() {
         enabled = UserDefaults.standard.object(forKey: "keepAlive") as? Bool ?? true
@@ -40,6 +43,8 @@ final class KeepAlive: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func update() {
         guard enabled, terminals > 0 else {
             manager.stopUpdatingLocation()
+            session?.invalidate()
+            session = nil
             return
         }
         switch manager.authorizationStatus {
@@ -49,6 +54,7 @@ final class KeepAlive: NSObject, ObservableObject, CLLocationManagerDelegate {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
             manager.startUpdatingLocation()
+            if session == nil { session = CLBackgroundActivitySession() }
         default:
             break
         }

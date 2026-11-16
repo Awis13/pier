@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct RootView: View {
     @Environment(PodModel.self) private var pod
     @Environment(JITSession.self) private var jit
+    @Environment(\.openWindow) private var openWindow
     @State private var selection: String?
     @State private var adding = false
     @State private var pickingCompose = false
@@ -14,7 +15,6 @@ struct RootView: View {
     @State private var showingSettings = false
     @State private var showingPodLog = false
     @State private var showingStorage = false
-    @State private var didLaunch = false
 
     var body: some View {
         NavigationSplitView {
@@ -140,21 +140,26 @@ struct RootView: View {
         .sheet(isPresented: $showingSettings) { PodSettings() }
         .sheet(isPresented: $showingPodLog) { PodLogView() }
         .sheet(isPresented: $showingStorage) { StorageView() }
-        .onChange(of: jit.state) {
-            launchSettled()
-            if jit.isOn, pod.autostartPending, !pod.isActive {
-                pod.autostartPending = false
-                pod.start(jit: jit)
-            }
-        }
+        .onChange(of: jit.state) { pod.jitChanged(jit) }
         .onAppear {
-            launchSettled()
+            pod.jitChanged(jit)
             // Checking without touch: --select NAME opens a service.
             let args = Checks.arguments
             if let i = args.firstIndex(of: "--select"), i + 1 < args.count { selection = args[i + 1] }
         }
         .onChange(of: pod.snapshot.pod) {
             // --run COMMAND runs in the selected service once the pod is up.
+            pod.jitChanged(jit)
+            // --windows N opens N terminal windows of the first service.
+            if pod.snapshot.pod == .running, let n = Checks.take("--windows").flatMap(Int.init),
+               let first = pod.spec.services.first {
+                Task {
+                    for _ in 0..<n {
+                        try? await Task.sleep(for: .seconds(2))
+                        openWindow(id: "terminal", value: first.name)
+                    }
+                }
+            }
             if pod.snapshot.pod == .running, let name = Checks.take("--install-ssh"),
                 let service = pod.spec.services.first(where: { $0.name == name }), service.sshPort == nil
             {
@@ -210,14 +215,6 @@ struct RootView: View {
             withAnimation(.easeOut(duration: 0.3)) { toast = nil }
         }
     }
-
-    private func launchSettled() {
-        guard !didLaunch, jit.state != .checking else { return }
-        didLaunch = true
-        if !jit.isOn, jit.state == .off(.noDebugger) {
-            Task { await jit.turnOn(.builtInStikJIT, interactive: false) }
-        }
-    }
 }
 
 struct PodHeader: View {
@@ -249,6 +246,12 @@ struct PodHeader: View {
                     .buttonStyle(.bordered)
             }
             JITStatus()
+            if pod.isActive {
+                // iPadOS ends an app whose last window is closed; minimizing keeps it.
+                Label("Closing Pier's last window quits it and stops the pod. Minimize it (yellow button) to keep the pod running.", systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if let error = pod.lastError {
                 Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
             }
@@ -746,7 +749,7 @@ struct NetworkView: View {
 }
 
 /// Launch arguments for checking Pier without touch (`--autostart`,
-/// `--demo-pod`, `--select`, `--run`, `--install-ssh`). They count only when
+/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`). They count only when
 /// the launch also sets PIER_CHECKS=1, which tapping the icon never does, and
 /// each acts once per launch.
 enum Checks {

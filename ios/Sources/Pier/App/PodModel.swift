@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Observation
 import PierCore
 
@@ -43,6 +44,32 @@ final class PodModel {
 
     /// Set by the `--autostart` launch argument: start once JIT is on.
     var autostartPending = Checks.has("--autostart")
+    private var launchSettled = false
+
+    /// What every window does as JIT settles: turn it on by itself once at
+    /// launch, and start the pod if the launch asked for it. Any window may
+    /// be the first iPadOS shows, so each calls this.
+    func jitChanged(_ jit: JITSession) {
+        if !launchSettled, jit.state != .checking {
+            launchSettled = true
+            if !jit.isOn, jit.state == .off(.noDebugger) {
+                Task { await jit.turnOn(.builtInStikJIT, interactive: false) }
+            }
+        }
+        if jit.isOn, autostartPending, !isActive {
+            autostartPending = false
+            start(jit: jit)
+        }
+        if snapshot.pod == .running, Checks.has("--close-windows") {
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                AppLog.write("pier: closing every window, pod \(snapshot.pod.label)")
+                for session in UIApplication.shared.openSessions {
+                    UIApplication.shared.requestSceneSessionDestruction(session, options: nil)
+                }
+            }
+        }
+    }
 
     private func save() {
         if let data = try? JSONEncoder().encode(spec) {

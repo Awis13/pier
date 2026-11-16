@@ -22,6 +22,7 @@ struct PierApp: App {
                 .onChange(of: phase) {
                     if phase == .active { jit.cameToFront() }
                 }
+                .onAppear { AppLog.write("pier: window opened, pod \(pod.snapshot.pod.label), booted \(pod.snapshot.bootSeconds.map { String($0) } ?? "-")") }
         }
         .commands { PierCommands() }
         WindowGroup("Terminal", id: "terminal", for: String.self) { $name in

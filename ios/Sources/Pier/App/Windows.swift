@@ -1,11 +1,13 @@
 import PierCore
 import SwiftUI
+import UIKit
 
 /// A window with shells of one service: tabs of its own, a new shell when
 /// it opens, all of them closed when it closes, so windows never take each
 /// other's sessions.
 struct TerminalWindow: View {
     @Environment(PodModel.self) private var pod
+    @Environment(JITSession.self) private var jit
     @Environment(\.dismissWindow) private var dismissWindow
     @State private var windowID = UUID().uuidString
     let serviceName: String?
@@ -17,7 +19,21 @@ struct TerminalWindow: View {
             if let name = serviceName, let service = pod.spec.services.first(where: { $0.name == name }) {
                 let deck = deck
                 Group {
-                    if pod.terminals.contains(where: { $0.deck == deck }) {
+                    if pod.state(of: service) != .running && !pod.terminals.contains(where: { $0.deck == deck }) {
+                        // A shell opens once the service runs.
+                        ContentUnavailableView {
+                            Label("\(name) Is Not Running", systemImage: "terminal")
+                        } description: {
+                            Text(pod.snapshot.pod == .running ? "Start \(name) from its menu." : "Start the pod, and a shell opens here.")
+                        } actions: {
+                            if !pod.isActive {
+                                Button { pod.start(jit: jit) } label: { Label("Start Pod", systemImage: "play.fill") }
+                                    .buttonStyle(.borderedProminent)
+                                    .disabled(!jit.isOn)
+                            }
+                            JITStatus()
+                        }
+                    } else if pod.terminals.contains(where: { $0.deck == deck }) {
                         FullScreenTerminal(pod: pod, service: service, deck: deck) {
                             pod.closeDeck(deck)
                             dismissWindow()
@@ -29,7 +45,12 @@ struct TerminalWindow: View {
                     }
                 }
                 .navigationTitle(name)
-                .onDisappear { pod.closeDeck(deck) }
+                .onAppear { pod.jitChanged(jit) }
+                .onChange(of: jit.state) { pod.jitChanged(jit) }
+                .onChange(of: pod.snapshot.pod) { pod.jitChanged(jit) }
+                // Only when the window itself goes: SwiftUI calls onDisappear
+                // here when another window opens, too.
+                .background(SceneEnd { pod.closeDeck(deck) })
                 // Shift-Command-N here: another window, a new shell in the same container.
                 .focusedSceneValue(\.selectedService, name)
             } else {
@@ -38,6 +59,40 @@ struct TerminalWindow: View {
             }
         }
     }
+}
+
+/// Runs `ended` once the scene of the window it is in disconnects (the
+/// window closed for good), not when the window merely loses focus.
+struct SceneEnd: UIViewRepresentable {
+    let ended: () -> Void
+
+    final class Probe: UIView {
+        var ended: (() -> Void)?
+        private var observer: NSObjectProtocol?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            guard observer == nil, let scene = window?.windowScene else { return }
+            observer = NotificationCenter.default.addObserver(
+                forName: UIScene.didDisconnectNotification, object: scene, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.ended?() }
+            }
+        }
+
+        deinit {
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+        }
+    }
+
+    func makeUIView(context: Context) -> Probe {
+        let v = Probe()
+        v.isUserInteractionEnabled = false
+        v.ended = ended
+        return v
+    }
+
+    func updateUIView(_ v: Probe, context: Context) { v.ended = ended }
 }
 
 /// What the selected service is, for the menu bar's commands.
