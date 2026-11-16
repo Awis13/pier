@@ -14,6 +14,9 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     /// The set of tabs it belongs to: the service's name for its page and
     /// full screen, or that plus a window's ID for a window of its own.
     let deck: String
+    /// A pane split off a tab (its ID): shown beside that tab's terminal,
+    /// not as a tab of its own.
+    var paneOf: UUID?
     let view: TerminalView
     @Published var title: String
     @Published private(set) var ended: Int32?
@@ -301,7 +304,7 @@ struct ServiceTerminals: View {
     let running: Bool
 
     var body: some View {
-        let tabs = pod.terminals.filter { $0.deck == service.name }
+        let tabs = pod.terminals.filter { $0.deck == service.name && $0.paneOf == nil }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -372,7 +375,7 @@ private struct TabChip: View {
 /// background, a tab strip of sessions on top (select, + for a new
 /// one, x to close, long press to rename), the text 4 pt off the sides, the
 /// key bar over the keyboard. Cmd+W or a two-finger swipe down leaves.
-final class FullScreenTerminalController: UIViewController {
+final class FullScreenTerminalController: UIViewController, UIGestureRecognizerDelegate {
     private let pod: PodModel
     private let service: ServiceSpec
     private let deck: String
@@ -397,7 +400,53 @@ final class FullScreenTerminalController: UIViewController {
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private var tabs: [TermTab] { pod.terminals.filter { $0.deck == deck } }
+    private var tabs: [TermTab] { pod.terminals.filter { $0.deck == deck && $0.paneOf == nil } }
+
+    /// How a tab is split: a terminal, or terminals side by side or stacked.
+    indirect enum Pane {
+        case leaf(TermTab)
+        case split(NSLayoutConstraint.Axis, [Pane])
+
+        var leaves: [TermTab] {
+            switch self {
+            case .leaf(let t): [t]
+            case .split(_, let ps): ps.flatMap(\.leaves)
+            }
+        }
+
+        /// `new` next to `at`, along `axis`.
+        func inserting(_ new: TermTab, after at: TermTab, axis: NSLayoutConstraint.Axis) -> Pane {
+            switch self {
+            case .leaf(let t):
+                return t === at ? .split(axis, [.leaf(t), .leaf(new)]) : self
+            case .split(let a, let ps):
+                if a == axis, let i = ps.firstIndex(where: { if case .leaf(let t) = $0 { t === at } else { false } }) {
+                    var out = ps
+                    out.insert(.leaf(new), at: i + 1)
+                    return .split(a, out)
+                }
+                return .split(a, ps.map { $0.inserting(new, after: at, axis: axis) })
+            }
+        }
+
+        /// Without `gone`; a split left with one pane becomes that pane.
+        func removing(_ gone: TermTab) -> Pane? {
+            switch self {
+            case .leaf(let t): return t === gone ? nil : self
+            case .split(let a, let ps):
+                let rest = ps.compactMap { $0.removing(gone) }
+                if rest.isEmpty { return nil }
+                return rest.count == 1 ? rest[0] : .split(a, rest)
+            }
+        }
+    }
+
+    /// Each tab's panes, by the tab's ID; a tab without an entry is one pane.
+    private var layouts: [UUID: Pane] = [:]
+    /// The pane that gets the keys.
+    private var focused: TermTab?
+
+    private func layout(of t: TermTab) -> Pane { layouts[t.id] ?? .leaf(t) }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -445,6 +494,9 @@ final class FullScreenTerminalController: UIViewController {
         tabBar.onClose = { [weak self] w in
             guard let self, w.index < self.tabs.count else { return }
             let t = self.tabs[w.index]
+            for pane in self.layout(of: t).leaves where pane !== t { self.pod.closeTerminal(pane) }
+            self.layouts[t.id] = nil
+            if t === self.shown { self.shown = nil }
             self.pod.closeTerminal(t)
             if let next = self.tabs.last { self.show(next) } else { self.leave() }
         }
@@ -464,38 +516,146 @@ final class FullScreenTerminalController: UIViewController {
         applyAppearance()
     }
 
-    /// Puts a session's terminal on screen and marks its tab.
+    /// Puts a tab on screen, every pane of it, and marks the tab.
     private func show(_ t: TermTab) {
-        shown?.view.removeFromSuperview()
-        shown?.borrowed = false
-        shown = t
-        t.borrowed = true
-        pod.selectedTerminal[deck] = t.id
-        let v = t.view
-        v.removeFromSuperview()
-        v.translatesAutoresizingMaskIntoConstraints = false
-        screen.addSubview(v)
-        NSLayoutConstraint.activate([
-            v.topAnchor.constraint(equalTo: screen.topAnchor),
-            v.bottomAnchor.constraint(equalTo: screen.bottomAnchor),
-            v.leadingAnchor.constraint(equalTo: screen.leadingAnchor),
-            v.trailingAnchor.constraint(equalTo: screen.trailingAnchor),
-        ])
-        if v.gestureRecognizers?.contains(where: { $0.name == "pier-fullscreen" }) != true {
-            let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
-            pinch.name = "pier-fullscreen"
-            v.addGestureRecognizer(pinch)
-            let down = UISwipeGestureRecognizer(target: self, action: #selector(leave))
-            down.name = "pier-fullscreen"
-            down.direction = .down
-            down.numberOfTouchesRequired = 2
-            v.addGestureRecognizer(down)
+        for old in shown.map({ layout(of: $0).leaves }) ?? [] {
+            old.view.removeFromSuperview()
+            old.borrowed = false
         }
-        setUpKeyBar(from: v)
-        TermTab.style(v)
-        t.connect()
+        screen.subviews.forEach { $0.removeFromSuperview() }
+        shown = t
+        pod.selectedTerminal[deck] = t.id
+        let pane = layout(of: t)
+        let leaves = pane.leaves
+        if focused == nil || !leaves.contains(where: { $0 === focused }) { focused = leaves.first }
+        let root = build(pane)
+        root.translatesAutoresizingMaskIntoConstraints = false
+        screen.addSubview(root)
+        NSLayoutConstraint.activate([
+            root.topAnchor.constraint(equalTo: screen.topAnchor),
+            root.bottomAnchor.constraint(equalTo: screen.bottomAnchor),
+            root.leadingAnchor.constraint(equalTo: screen.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: screen.trailingAnchor),
+        ])
+        for leaf in leaves {
+            leaf.borrowed = true
+            TermTab.style(leaf.view)
+            leaf.connect()
+        }
+        if let f = focused { setUpKeyBar(from: f.view) }
+        markFocus()
         refreshTabs()
-        if view.window != nil { v.becomeFirstResponder() }
+        if view.window != nil { focused?.view.becomeFirstResponder() }
+    }
+
+    /// The views of a layout: stacks of terminals, a hairline between them.
+    private func build(_ pane: Pane) -> UIView {
+        switch pane {
+        case .leaf(let t):
+            let v = t.view
+            v.removeFromSuperview()
+            v.translatesAutoresizingMaskIntoConstraints = false
+            v.inputAccessoryView = v === focused?.view ? v.inputAccessoryView : nil
+            if v.gestureRecognizers?.contains(where: { $0.name == "pier-fullscreen" }) != true {
+                let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:)))
+                pinch.name = "pier-fullscreen"
+                v.addGestureRecognizer(pinch)
+                let down = UISwipeGestureRecognizer(target: self, action: #selector(leave))
+                down.name = "pier-fullscreen"
+                down.direction = .down
+                down.numberOfTouchesRequired = 2
+                v.addGestureRecognizer(down)
+                let tap = UITapGestureRecognizer(target: self, action: #selector(tappedPane(_:)))
+                tap.name = "pier-fullscreen"
+                tap.cancelsTouchesInView = false
+                tap.delegate = self
+                v.addGestureRecognizer(tap)
+            }
+            return v
+        case .split(let axis, let ps):
+            let stack = UIStackView(arrangedSubviews: ps.map(build))
+            stack.axis = axis
+            stack.distribution = .fillEqually
+            stack.spacing = 1
+            stack.backgroundColor = UIColor.separator
+            return stack
+        }
+    }
+
+    /// A thin outline on the pane with the keys, when there is more than one.
+    private func markFocus() {
+        guard let t = shown else { return }
+        let leaves = layout(of: t).leaves
+        for leaf in leaves {
+            let on = leaves.count > 1 && leaf === focused
+            leaf.view.layer.borderWidth = on ? 1 : 0
+            leaf.view.layer.borderColor = view.tintColor.withAlphaComponent(0.6).cgColor
+        }
+    }
+
+    private func focus(_ t: TermTab) {
+        guard t !== focused else { return }
+        focused?.view.inputAccessoryView = nil
+        focused = t
+        setUpKeyBar(from: t.view)
+        markFocus()
+        t.view.becomeFirstResponder()
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    @objc private func tappedPane(_ g: UITapGestureRecognizer) {
+        guard let v = g.view, let t = shown.map({ layout(of: $0).leaves })?.first(where: { $0.view === v }) else { return }
+        focus(t)
+    }
+
+    /// A new shell beside the focused pane.
+    private func split(_ axis: NSLayoutConstraint.Axis) {
+        guard let t = shown, let at = focused else { return }
+        let new = pod.openTerminal(in: service, deck: deck)
+        new.paneOf = t.id
+        pod.selectedTerminal[deck] = t.id
+        layouts[t.id] = layout(of: t).inserting(new, after: at, axis: axis)
+        focused = new
+        show(t)
+    }
+
+    /// Closes the focused pane; with one pane, what Cmd-W always did.
+    @objc private func closePane() {
+        guard let t = shown, let f = focused, layout(of: t).leaves.count > 1 else { return leave() }
+        let rest = layout(of: t).removing(f)
+        let leaves = rest?.leaves ?? []
+        if f === t, let heir = leaves.first {
+            // The tab's own terminal goes: another pane takes its place in the strip.
+            heir.paneOf = nil
+            for other in leaves where other !== heir { other.paneOf = heir.id }
+            layouts[t.id] = nil
+            layouts[heir.id] = rest.flatMap { leaves.count > 1 ? $0 : nil }
+            pod.closeTerminal(f)
+            focused = heir
+            show(heir)
+        } else {
+            layouts[t.id] = rest.flatMap { leaves.count > 1 ? $0 : nil }
+            pod.closeTerminal(f)
+            focused = leaves.first
+            show(t)
+        }
+    }
+
+    @objc private func splitRight() { split(.horizontal) }
+    @objc private func splitDown() { split(.vertical) }
+    @objc private func nextPane() { stepPane(1) }
+    @objc private func previousPane() { stepPane(-1) }
+    private func stepPane(_ d: Int) {
+        guard let t = shown else { return }
+        let ls = layout(of: t).leaves
+        guard ls.count > 1, let i = ls.firstIndex(where: { $0 === focused }) else { return }
+        focus(ls[(i + d + ls.count) % ls.count])
+    }
+
+    @objc private func selectTab(_ c: UIKeyCommand) {
+        guard let n = c.input.flatMap(Int.init), n >= 1, n <= tabs.count else { return }
+        show(tabs[n - 1])
     }
 
     private func refreshTabs() {
@@ -524,12 +684,20 @@ final class FullScreenTerminalController: UIViewController {
         view.backgroundColor = PlatformColor(hex: theme.bg)
         tabBar.setForeground(PlatformColor(hex: theme.fg))
         overrideUserInterfaceStyle = theme.isDark ? .dark : .light
-        if let v = shown?.view { TermTab.style(v) }
+        for leaf in shown.map({ layout(of: $0).leaves }) ?? [] { TermTab.style(leaf.view) }
+        markFocus()
     }
 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        shown?.view.becomeFirstResponder()
+        (focused ?? shown)?.view.becomeFirstResponder()
+        // --split: right, then down (checking without a keyboard).
+        if Checks.has("--split") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.splitRight()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { self?.splitDown() }
+            }
+        }
     }
 
     override var prefersStatusBarHidden: Bool { true }
@@ -593,7 +761,11 @@ final class FullScreenTerminalController: UIViewController {
 
     override var keyCommands: [UIKeyCommand]? {
         [
-            UIKeyCommand(title: "Close Full Screen", action: #selector(leave), input: "w", modifierFlags: .command),
+            UIKeyCommand(title: "Close Pane", action: #selector(closePane), input: "w", modifierFlags: .command),
+            UIKeyCommand(title: "Split Right", action: #selector(splitRight), input: "d", modifierFlags: .command),
+            UIKeyCommand(title: "Split Down", action: #selector(splitDown), input: "d", modifierFlags: [.command, .shift]),
+            UIKeyCommand(title: "Next Pane", action: #selector(nextPane), input: "]", modifierFlags: .command),
+            UIKeyCommand(title: "Previous Pane", action: #selector(previousPane), input: "[", modifierFlags: .command),
             UIKeyCommand(title: "New Tab", action: #selector(newTab), input: "t", modifierFlags: .command),
             UIKeyCommand(title: "Next Tab", action: #selector(nextTab), input: "]", modifierFlags: [.command, .shift]),
             UIKeyCommand(title: "Previous Tab", action: #selector(previousTab), input: "[", modifierFlags: [.command, .shift]),
@@ -601,7 +773,9 @@ final class FullScreenTerminalController: UIViewController {
             UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
-        ]
+        ] + (1...9).map {
+            UIKeyCommand(title: "Tab \($0)", action: #selector(selectTab(_:)), input: String($0), modifierFlags: .command)
+        }
     }
 
     @objc private func newTab() { tabBar.onNew?() }

@@ -749,7 +749,7 @@ struct NetworkView: View {
 }
 
 /// Launch arguments for checking Pier without touch (`--autostart`,
-/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`). They count only when
+/// `--demo-pod`, `--select`, `--run`, `--install-ssh`, `--windows`, `--close-windows`, `--split`). They count only when
 /// the launch also sets PIER_CHECKS=1, which tapping the icon never does, and
 /// each acts once per launch.
 enum Checks {

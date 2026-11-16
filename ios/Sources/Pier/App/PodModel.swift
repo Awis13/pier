@@ -151,12 +151,14 @@ final class PodModel {
 
     /// A new shell in `service`, among the tabs of `deck` (by default the
     /// service's own: its page and full screen).
-    func openTerminal(in service: ServiceSpec, deck: String? = nil) {
+    @discardableResult
+    func openTerminal(in service: ServiceSpec, deck: String? = nil) -> TermTab {
         let deck = deck ?? service.name
         let n = terminals.filter { $0.service == service.name }.count + 1
         let tab = TermTab(service: service.name, deck: deck, number: n, pod: self)
         terminals.append(tab)
         selectedTerminal[deck] = tab.id
+        return tab
     }
 
     func closeTerminal(_ tab: TermTab) {
