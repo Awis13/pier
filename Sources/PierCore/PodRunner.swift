@@ -537,6 +537,10 @@ public actor PodRunner {
         update { $0.bootSeconds = Double(booted.components.seconds) + Double(booted.components.attoseconds) / 1e18 }
         podLog.note("virtual machine up in \(booted)")
         try await prepareVolumes(spec, in: pod)
+        if spec.services.contains(where: { $0.gpu == true }) {
+            let log = podLog
+            GPUServer.start(cache: root.appendingPathComponent("gpu-cache")) { log.note($0) }
+        }
 
         if separate {
             try await pod.startContainer(PodNetwork.helper)
@@ -643,6 +647,13 @@ public actor PodRunner {
         c.dns = DNS(nameservers: [CrateNetwork.nameserver])
         if service.mountsWork {
             c.mounts.append(.sharedMount(name: Self.workVolume, destination: "/work"))
+        }
+        if service.gpu == true {
+            c.mounts.append(.sharedMount(name: Self.workVolume, destination: GPUShim.directory, options: ["ro"], subpath: GPUShim.volumePath))
+            c.process.environmentVariables.append(contentsOf: [
+                "GGML_BACKEND_PATH=\(GPUShim.directory)/libggml-rpc.so",
+                "PIER_GPU=\(GPUServer.endpoint)",
+            ])
         }
     }
 
@@ -920,6 +931,11 @@ public actor PodRunner {
                     }
                 }
             }
+        }
+        // The GPU backend for containers, there before any of them starts.
+        if spec.services.contains(where: { $0.gpu == true }), let shim = GPUShim.data {
+            dirs.append(GPUShim.volumePath)
+            files.append((GPUShim.volumePath + "/libggml-rpc.so", shim, 0o755))
         }
         guard !dirs.isEmpty || !files.isEmpty else { return }
         let bytes = files.reduce(0) { $0 + $1.data.count }
@@ -1381,4 +1397,12 @@ final class ByteSink: Writer, Sendable {
     }
 
     func close() throws {}
+}
+
+/// Pier's RPC backend for ggml in the containers (gpu/pier-gpu.cpp, built
+/// against the ggml of the Ollama release it serves).
+enum GPUShim {
+    static let directory = "/usr/local/lib/pier"
+    static let volumePath = ".pier/gpu"
+    static let data: Data? = Bundle.module.url(forResource: "libggml-rpc", withExtension: "so").flatMap { try? Data(contentsOf: $0) }
 }

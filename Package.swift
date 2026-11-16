@@ -16,9 +16,12 @@ let package = Package(
         .package(url: "https://github.com/jpsim/Yams.git", "5.1.0"..<"7.0.0"),
     ],
     targets: [
+        // ggml with Metal and its RPC server, from llama.cpp (gpu/build-ggml.sh).
+        .binaryTarget(name: "ggml", path: "Frameworks/ggml.xcframework"),
         .target(
             name: "PierCore",
             dependencies: [
+                "ggml",
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
@@ -26,7 +29,7 @@ let package = Package(
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Yams", package: "Yams"),
             ],
-            resources: [.copy("Resources/cacert.pem"), .copy("Resources/vmexec-overlay.tar.gz")]
+            resources: [.copy("Resources/cacert.pem"), .copy("Resources/vmexec-overlay.tar.gz"), .copy("Resources/libggml-rpc.so")]
         ),
         .testTarget(
             name: "PierCoreTests",

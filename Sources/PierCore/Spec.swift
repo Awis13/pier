@@ -81,6 +81,10 @@ public struct ServiceSpec: Codable, Hashable, Sendable, Identifiable {
     /// The service whose agent started this one through the Agent API; it
     /// stays in the pod like any other until removed.
     public var spawnedBy: String?
+    /// The iPad's GPU for ggml software in the service (Ollama, llama.cpp):
+    /// Pier's RPC backend is mounted at /usr/local/lib/pier and found
+    /// through GGML_BACKEND_PATH.
+    public var gpu: Bool?
     /// When an agent's container goes away by itself, if it asked for that.
     public var expires: Date?
 

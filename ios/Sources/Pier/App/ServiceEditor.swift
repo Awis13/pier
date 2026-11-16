@@ -17,6 +17,7 @@ struct ServiceEditor: View {
     @State private var mountsWork = true
     @State private var honestScanning = false
     @State private var agentAccess = AgentTier.off
+    @State private var gpu = false
     @State private var startup = ""
     @State private var showingCatalog = false
     @State private var picked: String?
@@ -62,6 +63,13 @@ struct ServiceEditor: View {
                     Text("On Start")
                 } footer: {
                     Text("One command a line, run in the background every time the service starts: daemons a container has no init to start, like sshd or tailscaled. Output goes to /var/log/pier-startup.log.")
+                }
+                Section {
+                    Toggle("iPad GPU", isOn: $gpu)
+                } header: {
+                    Text("GPU")
+                } footer: {
+                    Text("Software built on ggml finds the iPad's GPU as a Metal device: Ollama, llama.cpp and the like. Pull the image and models as usual; nothing to set up inside. Takes effect when the service starts.")
                 }
                 Section {
                     Picker("Agent Access", selection: $agentAccess) {
@@ -151,6 +159,7 @@ struct ServiceEditor: View {
         mountsWork = s.mountsWork
         honestScanning = s.honestScanning ?? false
         agentAccess = s.agentAccess ?? .off
+        gpu = s.gpu ?? false
         startup = (s.startup ?? []).joined(separator: "\n")
     }
 
@@ -189,6 +198,7 @@ struct ServiceEditor: View {
         s.mountsWork = mountsWork
         s.honestScanning = honestScanning ? true : nil
         s.agentAccess = agentAccess == .off ? nil : agentAccess
+        s.gpu = gpu ? true : nil
         let lines = startup.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         s.startup = lines.isEmpty ? nil : lines
         return s
