@@ -1,0 +1,139 @@
+name: Pier
+options:
+  bundleIdPrefix: eu.postnikov
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+
+packages:
+  PierCore:
+    path: ..
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    exactVersion: 1.20.0
+
+targets:
+  Pier:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources/Pier
+      - path: Resources/Assets.xcassets
+      - path: Resources/vmlinux
+        buildPhase: resources
+      - path: Resources/themes.json
+        buildPhase: resources
+      - path: Resources/themes-LICENSE.txt
+        buildPhase: resources
+      - path: Resources/Fonts
+        type: folder
+        buildPhase: resources
+    info:
+      path: Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Pier
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false
+        # Built-in StikJIT's pairing file lives in Documents/StikJIT.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        NSLocalNetworkUsageDescription: Pier looks for this iPad's Remote Pairing service to turn on JIT, and serves your containers' ports on the network when you allow it.
+        NSBonjourServices:
+          - _remotepairing._tcp
+          - _remotepairing-pairable-host._tcp
+        LSApplicationQueriesSchemes:
+          - stikdebug
+          - localdevvpn
+        CFBundleURLTypes:
+          - CFBundleURLName: eu.postnikov.pier
+            CFBundleURLSchemes:
+              - pier
+        UIBackgroundModes:
+          - location
+        NSLocationWhenInUseUsageDescription: Keep-alive uses coarse location updates only to keep your containers running in the background. Location is never stored or sent anywhere.
+    entitlements:
+      path: Resources/Pier.entitlements
+      properties:
+        com.apple.developer.kernel.increased-memory-limit: true
+        com.apple.developer.kernel.extended-virtual-addressing: true
+    dependencies:
+      - target: CrateJITHelper
+      - package: PierCore
+        product: PierCore
+      - package: SwiftTerm
+      # libslirp and GLib for crate's user-mode network (Scripts/fetch-frameworks.sh).
+      - framework: Frameworks/Slirp.xcframework
+        embed: true
+      - framework: Frameworks/GLib.xcframework
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: eu.postnikov.pier
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        DEVELOPMENT_TEAM: J3P823GPZ9
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Pier/JIT/Pier-Bridging-Header.h
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+
+  # Built-in StikJIT: the helper process that attaches a debugger to Pier
+  # (from crate-ios, MPL-2.0). Pier starts it as CrateJITHelper.appex.
+  CrateJITHelper:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: Sources/JITHelper
+    info:
+      path: Resources/JITHelper-Info.plist
+      properties:
+        CFBundleDisplayName: Pier JIT helper
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.ar.viewer
+          NSExtensionPrincipalClass: CrateJITHelper
+          NSExtensionAttributes:
+            NSExtensionActivationRule: FALSEPREDICATE
+        XPCService:
+          ServiceType: Application
+          _MultipleInstances: true
+          _ProcessType: App
+    postBuildScripts:
+      - name: Embed StikJIT
+        basedOnDependencyAnalysis: false
+        script: |
+          [ "$PLATFORM_NAME" = iphoneos ] || exit 0
+          SRC="$PROJECT_DIR/Frameworks/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+          [ -d "$SRC" ] || { echo "error: no StikJIT: run Scripts/fetch-frameworks.sh"; exit 1; }
+          DEST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
+          mkdir -p "$DEST"
+          rsync -a --delete "$SRC" "$DEST/"
+          [ -z "$EXPANDED_CODE_SIGN_IDENTITY" ] ||
+            codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DEST/StikJIT.framework"
+    settings:
+      base:
+        PRODUCT_NAME: CrateJITHelper
+        PRODUCT_BUNDLE_IDENTIFIER: eu.postnikov.pier.jithelper
+        DEVELOPMENT_TEAM: J3P823GPZ9
+        CODE_SIGN_STYLE: Automatic
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        APPLICATION_EXTENSION_API_ONLY: YES
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]: $(PROJECT_DIR)/Frameworks/StikJIT.xcframework/ios-arm64
+        OTHER_LDFLAGS[sdk=iphoneos*]: -framework StikJIT
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64

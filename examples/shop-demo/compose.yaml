@@ -1,0 +1,83 @@
+# A small shop that never sleeps: Postgres with fake customers and orders,
+# Redis with live counters, a generator making orders, a live dashboard
+# (http://127.0.0.1:8088) and a shell with a `status` command.
+# Drop this folder on Pier, or open it with + > Import Docker Compose.
+name: shop-demo
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: shop
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "15432:5432"
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shop"]
+      interval: 2s
+      retries: 60
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --appendonly no
+    volumes:
+      - redisdata:/data
+    ports:
+      - "16379:6379"
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  shop:
+    image: alpine:3.20
+    command: sh /app/shop.sh
+    env_file: .env
+    volumes:
+      - ./shop:/app:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+
+  monitor:
+    image: alpine:3.20
+    command: sh /app/monitor.sh
+    env_file: .env
+    volumes:
+      - ./monitor:/app:ro
+    ports:
+      - "8088:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    mem_limit: 128m
+    restart: unless-stopped
+
+  shell:
+    image: alpine:3.20
+    command: sh /opt/shell/setup.sh
+    env_file: .env
+    volumes:
+      - ./shell:/opt/shell:ro
+    depends_on:
+      - db
+      - cache
+      - monitor
+    mem_limit: 128m
+
+volumes:
+  pgdata:
+  redisdata:

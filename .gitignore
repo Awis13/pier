@@ -1,0 +1,5 @@
+.build/
+Frameworks/
+*.xcodeproj/
+DerivedData/
+Sources/PierCore/Resources/vmexec-overlay.tar.gz

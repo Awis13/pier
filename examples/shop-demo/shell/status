@@ -1,0 +1,55 @@
+#!/bin/bash
+# status: every service of the shop at a glance. status -w refreshes every 2 s.
+if [ "$1" = "-w" ]; then
+  trap 'tput cnorm; exit' INT; tput civis
+  while true; do out=$("$0"); clear; echo "$out"; sleep 2; done
+fi
+
+export PGHOST=${PGHOST:-db} PGUSER=${PGUSER:-postgres} PGPASSWORD=${PGPASSWORD:-pier} PGDATABASE=${PGDATABASE:-shop}
+
+G=$'\e[32m'; R=$'\e[31m'; Y=$'\e[33m'; D=$'\e[2m'; B=$'\e[1m'; N=$'\e[0m'
+ok()  { printf "  %s●%s %-9s %-15s %s\n" "$G" "$N" "$1" "$2" "$3"; }
+bad() { printf "  %s●%s %-9s %-15s %s\n" "$R" "$N" "$1" "$2" "$R$3$N"; }
+ip()  { getent hosts "$1" | awk '{print $1; exit}'; }
+port(){ nc -z -w 1 "$1" "$2" 2>/dev/null; }
+
+printf "\n  %sshop-demo%s  %s%s%s\n\n" "$B" "$N" "$D" "$(date '+%Y-%m-%d %H:%M:%S')" "$N"
+printf "  %s  %-9s %-15s %s%s\n" "$D" "SERVICE" "ADDRESS" "STATE" "$N"
+
+a=$(ip db)
+if v=$(psql -qtAX -F ' ' -c "select pg_size_pretty(pg_database_size('shop')), (select count(*) from orders), (select count(*) from orders where created > now() - interval '1 minute')" 2>/dev/null); then
+  set -- $v
+  ok db "$a" "postgres up, $1 $2, $3 orders total, $4 in the last minute"
+else
+  bad db "${a:--}" "postgres not answering"
+fi
+
+a=$(ip cache)
+if r=$(redis-cli -h cache info 2>/dev/null | tr -d '\r') && [ -n "$r" ]; then
+  g() { echo "$r" | sed -n "s/^$1://p"; }
+  ok cache "$a" "redis up $(g uptime_in_seconds)s, $(g used_memory_human), $(g instantaneous_ops_per_sec) ops/s, $(redis-cli -h cache dbsize) keys"
+else
+  bad cache "${a:--}" "redis not answering"
+fi
+
+a=$(ip shop)
+last=$(redis-cli -h cache lindex feed 0 2>/dev/null)
+if [ -n "$last" ]; then
+  t=${last%%|*}
+  age=$(( $(date +%s) - $(date -d "$(date +%Y-%m-%d) $t" +%s 2>/dev/null || date +%s) ))
+  if [ "$age" -lt 10 ]; then ok shop "$a" "making orders, last at $t: ${last#*|}"
+  else bad shop "$a" "no order for ${age}s"; fi
+else
+  bad shop "${a:--}" "no orders yet"
+fi
+
+a=$(ip monitor)
+if code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "http://monitor:8080/"); [ "$code" = 200 ]; then
+  ok monitor "$a" "dashboard 200, open http://127.0.0.1:8088 on the iPad"
+else
+  bad monitor "${a:--}" "dashboard answers ${code:-nothing}"
+fi
+
+ok shell "$(hostname -i 2>/dev/null | awk '{print $1}')" "you are here"
+
+printf "\n  %sforwarded:%s 8088 dashboard, 15432 postgres (postgres/pier), 16379 redis\n\n" "$D" "$N"

@@ -1,0 +1,5 @@
+Frameworks/
+Resources/vmlinux
+Resources/Fonts/*.ttf
+Resources/Fonts/*.otf
+*.xcodeproj/

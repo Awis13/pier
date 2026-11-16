@@ -1,0 +1,45 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+import Foundation
+
+/// How Crate gets JIT turned on for itself.
+enum JITMethod: String, CaseIterable, Identifiable {
+    case builtInStikJIT
+    case stikDebug
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .builtInStikJIT: "Built-in StikJIT"
+        case .stikDebug: "StikDebug"
+        }
+    }
+
+    static let standard = Self.builtInStikJIT
+}
+
+/// The settings Crate keeps in UserDefaults, by key, so every `@AppStorage`
+/// that reads one spells it the same way.
+enum SettingsKey {
+    static let jitMethod = "jit.method"
+    static let codeRegionMB = "jit.codeRegionMB"
+    /// Whether Pier logs at all; on unless turned off.
+    static let logsEnabled = "logs.enabled"
+
+    /// Debug builds: pretend JIT is on (see `JITSession.previewOn`).
+    static let previewJIT = "preview.jitOn"
+}
+
+/// Sizes offered for the JIT code region, in MB. It is claimed once per launch,
+/// so a change applies the next time crate opens. The default is the largest:
+/// more room for translated code means less retranslating.
+enum CodeRegion {
+    static let choices = [128, 256, 384, 512, 768, 1024]
+    static let standard = 1024
+    /// When the size chosen doesn't fit where the debugger can authorize it,
+    /// crate takes the largest gap that does, down to this.
+    static let minimumFallback = 256
+}
