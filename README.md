@@ -17,6 +17,12 @@
 </p>
 
 <p align="center">
+  <img src="docs/terminal.gif" width="900" alt="On an iPad: Kali starts in Pier, Claude Code runs in a full-screen terminal beside another coding agent in a split pane, and more shells open in windows of their own">
+  <br>
+  <sub>Kali in Pier: Claude Code in a full-screen terminal, a second agent in a split pane, and more shells in windows of their own. <a href="docs/terminal.mp4">Full-size video</a>.</sub>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/pod.jpg" width="49%" alt="Pier on an iPad: a pod with Kali and nginx running">
   <img src="docs/screenshots/terminal.jpg" width="49%" alt="A full-screen terminal in the Kali container, running fastfetch">
 </p>
@@ -30,6 +36,15 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
 
 - **Pods of services.** Postgres, Redis, nginx, Kali, Alpine, anything with a `linux/arm64`
   image, in one VM. Pulled with Docker-style progress, unpacked into ext4 disks with a journal.
+- **A terminal made for the iPad.** A shell straight into each container (a PTY over vsock,
+  no SSH). Every command is a block with its exit code, how long it ran and when it ended;
+  right click copies a block, its command or its output, and the mouse selects text. As you
+  type, the history suggests the rest; Command-F finds text in the scrollback, Command-P jumps
+  to any shell, and a long command that ends while you look elsewhere sends a notification.
+  See [The terminal](#the-terminal).
+- **Windows, tabs and panes.** Command-N opens a window, Command-Shift-N a new shell of the
+  same service in a window of its own, Command-T a tab, Command-D a split; each window keeps
+  its own shells. One button installs OpenSSH and tmux if you'd rather use an SSH client.
 - **A network like Docker's.** Every service gets its own address (`172.20.0.x`) and host
   name, so two services can both listen on port 80. Ports are forwarded to the iPad, and
   optionally to your network.
@@ -40,9 +55,6 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
   Whatever it can't do, it says.
 - **One service at a time.** Stop, start or restart a service while the rest keep running.
   A service you stopped stays stopped the next time the pod starts.
-- **A real terminal.** A shell straight into the container (a PTY over vsock, no SSH), with
-  tabs and a full-screen mode. One button installs OpenSSH and tmux if you'd rather use
-  an SSH client.
 - **An API for agents.** Give a service agent access and an agent in it (Claude Code, a
   script) works the pod: `pier ps`, `pier logs db`, `pier exec db psql ...`, `pier cp`, and at
   the top tier `pier spawn alpine` for containers of its own, which join the running pod
@@ -56,6 +68,36 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
 - **Package managers that work.** apt, zypper and others are moved to HTTPS with a current CA
   bundle, since plain HTTP is often intercepted on mobile networks.
 - **Storage.** See what images and disks take, and remove what nothing uses.
+
+## The terminal
+
+Every shell gets hooks that mark where each prompt, command and output starts (bash's prompt
+hooks; other shells work as plain terminals). Pier uses them for:
+
+- **Command blocks**: a line between commands and a badge on each prompt with ✓ or ✗ and the
+  exit code, how long the command ran and when it ended.
+- **Copying**: right click for Copy, Copy Block, Copy Command, Copy Output, Run Again, Paste
+  and Select All; drag with the mouse to select (fingers still scroll). Programs that take the
+  mouse, like vim and htop, still get it.
+- **Suggestions**: the newest command from any service that starts with what you typed, in
+  grey; → or a tap takes it.
+- **Notifications**: a command of ten seconds or more that ends while its terminal isn't in
+  front says how it ended; a tap goes back to it.
+
+| Keys | |
+|---|---|
+| Command-N · Command-Shift-N | new window · new shell of this service in its own window |
+| Command-T · Command-W | new tab · close the tab or pane |
+| Command-D · Command-Shift-D | split side by side · one under another |
+| Command-1…9 · Command-Shift-[ ] | go to a tab · previous and next tab |
+| Command-P | jump to any shell of any service, with a preview |
+| Command-F · Command-G · Command-Shift-G | find in the scrollback · next · previous |
+| Command-R | search the command history |
+| Command-↑ · Command-↓ | previous and next command |
+| Command-+ · Command-− · Command-0 | text size |
+
+The shortcuts keep working inside full-screen programs that read every key, such as btop.
+A floating or split keyboard leaves the terminal its full height.
 
 ## Try it: the shop demo
 
