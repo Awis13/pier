@@ -122,6 +122,21 @@ A few details worth knowing:
   making one).
 - Images for `linux/arm64`.
 
+## Installing
+
+Download **Pier.ipa** from [Releases](https://github.com/Awis13/pier/releases) and sideload it
+with SideStore, AltStore or Sideloadly. Then:
+
+1. Install the LocalDevVPN app and turn it on: Pier reaches the iPad's own debugging service
+   through it to turn JIT on.
+2. Put the iPad's pairing file at **On My iPad › Pier › StikJIT › pairingFile.plist**.
+3. Open Pier. It turns JIT on by itself, then **Start** runs the pod.
+
+With a free Apple ID the app is signed for 7 days and takes 2 of your 3 app slots (the app and
+its JIT helper). Pier asks for the increased memory limit and extended virtual addressing; a
+free account doesn't grant them by default, so add them to the app ID if your sideloading tool
+can, or keep pods small. A paid developer account has both.
+
 ## Building
 
 Pier builds from three repositories side by side:
@@ -143,6 +158,8 @@ guest/build.sh                  # the guest kernel and agent, in a Linux contain
 ios/Scripts/fetch-frameworks.sh ../crate-ios    # Slirp, GLib, StikJIT, crate, fonts, kernel
 cd ios && xcodegen generate && open Pier.xcodeproj
 ```
+
+`ios/Scripts/make-ipa.sh` builds `Pier.ipa` for sideloading.
 
 Set your team in `ios/project.yml` (`DEVELOPMENT_TEAM`, bundle IDs) before building to a device.
 You need Xcode 26 or later, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and a Rust
