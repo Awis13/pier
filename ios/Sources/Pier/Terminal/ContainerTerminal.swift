@@ -293,6 +293,12 @@ final class TerminalHostController: UIViewController {
     private var bottomToKeyboard: NSLayoutConstraint?
     private var bottomToKeyBar: NSLayoutConstraint?
     private var softKeyboardUp = false
+    /// The keyboard floats (or is split): the terminal keeps its height and
+    /// the key bar sits at the bottom, not over the keyboard's empty dock.
+    private var keyboardFloats = false
+    private var barToKeyboard: NSLayoutConstraint?
+    private var barToBottom: NSLayoutConstraint?
+    private var bottomToView: NSLayoutConstraint?
     private var pinchBase: Double = 0
     private var looks: AnyCancellable?
     private let holder = UIView()
@@ -302,6 +308,7 @@ final class TerminalHostController: UIViewController {
         holder.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(holder)
         bottomToKeyboard = holder.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
+        bottomToView = holder.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         NSLayoutConstraint.activate([
             holder.topAnchor.constraint(equalTo: view.topAnchor),
             holder.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -375,32 +382,45 @@ final class TerminalHostController: UIViewController {
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 12),
             bar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -12),
-            bar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -6),
             bar.heightAnchor.constraint(equalToConstant: 44),
         ])
+        barToKeyboard = bar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -6)
+        barToBottom = bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         updateKeyBar()
     }
 
     @objc private func keyboardChanged(_ n: Notification) {
-        var up = false
+        var up = false, floats = false
         if n.name != UIResponder.keyboardWillHideNotification,
            let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
            let screen = view.window?.screen {
             let onScreen = end.intersection(screen.bounds)
             up = !onScreen.isNull && onScreen.height > 120
+            floats = up && Self.floats(end, on: screen.bounds)
         }
-        guard up != softKeyboardUp else { return }
+        guard up != softKeyboardUp || floats != keyboardFloats else { return }
         softKeyboardUp = up
+        keyboardFloats = floats
         updateKeyBar()
     }
 
     @objc private func updateKeyBar() {
         let show = GCKeyboard.coalesced == nil && keyBar != nil && softKeyboardUp
         keyBar?.isHidden = !show
-        bottomToKeyBar?.isActive = false
-        bottomToKeyboard?.isActive = false
-        (show ? bottomToKeyBar : bottomToKeyboard)?.isActive = true
+        for c in [bottomToKeyBar, bottomToKeyboard, bottomToView, barToKeyboard, barToBottom] { c?.isActive = false }
+        if show {
+            bottomToKeyBar?.isActive = true
+            (keyboardFloats ? barToBottom : barToKeyboard)?.isActive = true
+        } else {
+            (keyboardFloats ? bottomToView : bottomToKeyboard)?.isActive = true
+        }
         view.setNeedsLayout()
+    }
+
+    /// A keyboard that does not reach across the bottom of the screen
+    /// floats over the app (or is split) and takes no room from it.
+    static func floats(_ frame: CGRect, on screen: CGRect) -> Bool {
+        frame.width < screen.width - 1 || frame.maxY < screen.maxY - 1
     }
 
     @objc private func pinched(_ g: UIPinchGestureRecognizer) {
@@ -561,6 +581,12 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     private var bottomToKeyboard: NSLayoutConstraint?
     private var bottomToKeyBar: NSLayoutConstraint?
     private var softKeyboardUp = false
+    /// The keyboard floats (or is split): the terminal keeps its height and
+    /// the key bar sits at the bottom, not over the keyboard's empty dock.
+    private var keyboardFloats = false
+    private var barToKeyboard: NSLayoutConstraint?
+    private var barToBottom: NSLayoutConstraint?
+    private var bottomToView: NSLayoutConstraint?
     private var pinchBase: Double = 0
     private var looks: AnyCancellable?
     private var showObserver: NSObjectProtocol?
@@ -640,6 +666,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         let pullUp = screen.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor)
         pullUp.priority = .defaultLow
         bottomToKeyboard = screen.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor)
+        bottomToView = screen.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         NSLayoutConstraint.activate([
             screen.topAnchor.constraint(greaterThanOrEqualTo: top.topAnchor),
             pullUp,
@@ -934,32 +961,45 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         NSLayoutConstraint.activate([
             bar.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 16),
             bar.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -16),
-            bar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -6),
             bar.heightAnchor.constraint(equalToConstant: 44),
         ])
+        barToKeyboard = bar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -6)
+        barToBottom = bar.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -8)
         updateKeyBar()
     }
 
     @objc private func keyboardChanged(_ n: Notification) {
-        var up = false
+        var up = false, floats = false
         if n.name != UIResponder.keyboardWillHideNotification,
            let end = (n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
            let s = view.window?.screen {
             let onScreen = end.intersection(s.bounds)
             up = !onScreen.isNull && onScreen.height > 120
+            floats = up && Self.floats(end, on: s.bounds)
         }
-        guard up != softKeyboardUp else { return }
+        guard up != softKeyboardUp || floats != keyboardFloats else { return }
         softKeyboardUp = up
+        keyboardFloats = floats
         updateKeyBar()
     }
 
     @objc private func updateKeyBar() {
         let show = GCKeyboard.coalesced == nil && keyBar != nil && softKeyboardUp
         keyBar?.isHidden = !show
-        bottomToKeyBar?.isActive = false
-        bottomToKeyboard?.isActive = false
-        (show ? bottomToKeyBar : bottomToKeyboard)?.isActive = true
+        for c in [bottomToKeyBar, bottomToKeyboard, bottomToView, barToKeyboard, barToBottom] { c?.isActive = false }
+        if show {
+            bottomToKeyBar?.isActive = true
+            (keyboardFloats ? barToBottom : barToKeyboard)?.isActive = true
+        } else {
+            (keyboardFloats ? bottomToView : bottomToKeyboard)?.isActive = true
+        }
         view.setNeedsLayout()
+    }
+
+    /// A keyboard that does not reach across the bottom of the screen
+    /// floats over the app (or is split) and takes no room from it.
+    static func floats(_ frame: CGRect, on screen: CGRect) -> Bool {
+        frame.width < screen.width - 1 || frame.maxY < screen.maxY - 1
     }
 
     @objc private func pinched(_ g: UIPinchGestureRecognizer) {

@@ -68,8 +68,18 @@ public struct PodSnapshot: Sendable, Equatable {
     public var services: [String: ServiceState] = [:]
     /// When the virtual machine came up, for "booted in".
     public var bootSeconds: Double?
+    /// Containers agents started through the Agent API: name, then the
+    /// service that asked and when it goes.
+    public var spawned: [String: SpawnInfo] = [:]
 
     public init() {}
+}
+
+/// A container an agent started.
+public struct SpawnInfo: Sendable, Equatable {
+    public var owner: String
+    public var image: String
+    public var expires: Date?
 }
 
 /// How the pod's virtual machine runs its CPUs.
@@ -96,11 +106,24 @@ public actor PodRunner {
     let store: ImageStore
     var imageStore: ImageStore { store }
 
-    private var pod: LinuxPod?
+    var pod: LinuxPod?
     /// Services on networks of their own, by name: their init's PID in the VM.
     private var pids: [String: Int32] = [:]
     /// The spec of the running pod, for restart policies.
-    private var currentSpec: PodSpec?
+    var currentSpec: PodSpec?
+    /// Services added to the running pod (each in a disk slot); they go
+    /// back into one when started again.
+    var hotAdded: Set<String> = []
+    /// Each service's place on the bridge (its address is .10 plus it),
+    /// kept while the pod runs: one removed leaves a gap, not a shift.
+    var netIndex: [String: Int] = [:]
+    /// The Agent API: tokens (to their service), what agents started and
+    /// when each goes, and the listener on the VM's vsock.
+    var agentTokens: [String: String] = [:]
+    var spawnTimers: [String: Task<Void, Never>] = [:]
+    var agentListener: VsockListener?
+    /// The pod's hosts file and network kind, for services added later.
+    private var bootHosts: Hosts?
     private var restarts: [String: Int] = [:]
     /// A boot is under way (the VM may not exist yet).
     private var booting = false
@@ -158,7 +181,7 @@ public actor PodRunner {
         }
     }
 
-    private nonisolated func update(_ body: (inout PodSnapshot) -> Void) {
+    nonisolated func update(_ body: (inout PodSnapshot) -> Void) {
         let s = snapshotState.withLock { s in
             body(&s)
             return s
@@ -171,7 +194,7 @@ public actor PodRunner {
         podLog.note("pod: \(state.label)")
     }
 
-    private nonisolated func setService(_ name: String, _ state: ServiceState) {
+    nonisolated func setService(_ name: String, _ state: ServiceState) {
         update { $0.services[name] = state }
     }
 
@@ -180,7 +203,7 @@ public actor PodRunner {
     private var initfsPath: URL { root.appendingPathComponent("initfs.ext4") }
     private var workPath: URL { root.appendingPathComponent("work.ext4") }
 
-    private func serviceDir(_ name: String) -> URL {
+    func serviceDir(_ name: String) -> URL {
         root.appendingPathComponent("services").appendingPathComponent(name)
     }
 
@@ -241,7 +264,7 @@ public actor PodRunner {
     }
 
     /// Says something about a service in its own log and in the pod's.
-    private nonisolated func say(_ service: String, _ text: String) {
+    nonisolated func say(_ service: String, _ text: String) {
         log(for: service).note(text)
         podLog.note("\(service): \(text)")
     }
@@ -378,6 +401,7 @@ public actor PodRunner {
         let bind = spec.reachableFromNetwork ? "" : "127.0.0.1"
         let separate = spec.usesSeparateNetworks
         let network = PodNetwork(services: spec.services)
+        netIndex = Dictionary(uniqueKeysWithValues: spec.services.enumerated().map { ($1.name, $0) })
         // With networks of their own, the VM takes each port at the same
         // number and the helper sends it on to its service.
         let forwards = spec.services.flatMap { s in
@@ -409,6 +433,7 @@ public actor PodRunner {
             backend: cpuBackend,
             jitRegion: region,
             portForwards: forwards,
+            diskSlots: spec.slots,
             logger: logger
         )
 
@@ -460,40 +485,15 @@ public actor PodRunner {
         }
         for (service, rootfs, imageConfig) in prepared {
             let out = log(for: service.name)
+            let cpus = spec.cpus
             try await pod.addContainer(service.name, rootfs: rootfs) { c in
-                if let imageConfig {
-                    c.process = LinuxProcessConfiguration(from: imageConfig)
-                }
-                if !service.command.isEmpty {
-                    c.process.arguments = service.command
-                } else if service.entrypoint != nil || service.args != nil {
-                    // Compose: a new entrypoint drops the image's command.
-                    let entry = service.entrypoint ?? imageConfig?.entrypoint ?? []
-                    let args = service.args ?? (service.entrypoint == nil ? imageConfig?.cmd ?? [] : [])
-                    c.process.arguments = entry + args
-                }
-                if let wd = service.workingDir { c.process.workingDirectory = wd }
-                if let u = service.user { c.process.user = ContainerizationOCI.User(username: u) }
-                if service.privileged == true { c.process.capabilities = .allCapabilities }
-                for v in service.volumes ?? [] {
-                    c.mounts.append(.sharedMount(name: Self.workVolume, destination: v.target, options: v.readOnly ? ["ro"] : [], subpath: v.source))
-                }
-                c.process.environmentVariables.append(contentsOf: service.environment)
-                c.process.stdout = out
-                c.process.stderr = out
-                c.cpus = spec.cpus
-                c.memoryInBytes = service.memoryMiB.mib()
-                c.hostname = service.name
-                c.hosts = hosts
-                if separate { c.network = .isolated }
-                c.dns = DNS(nameservers: [CrateNetwork.nameserver])
-                if service.mountsWork {
-                    c.mounts.append(.sharedMount(name: Self.workVolume, destination: "/work"))
-                }
+                Self.configure(&c, service, imageConfig, out: out, cpus: cpus, hosts: hosts, separate: separate)
             }
         }
 
         self.pod = pod
+        bootHosts = hosts
+        hotAdded = []
         let engine: String
         switch backend {
         case .auto: engine = "Hypervisor.framework when allowed, otherwise crate's JIT"
@@ -520,6 +520,7 @@ public actor PodRunner {
             let (code, out) = try await exec(["/bin/sh", "-c", PodNetwork.bridge], in: PodNetwork.helper)
             podLog.note("network: \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
             guard code == 0 else { throw PierError("could not set up the network:\n\(out.suffix(800))") }
+            await startAgentAPI(in: pod)
         }
         for (index, (service, _, _)) in prepared.enumerated() {
             try checkCancelled()
@@ -536,37 +537,7 @@ public actor PodRunner {
                 }
                 say(service.name, "starting")
                 try await pod.startContainer(service.name)
-                // Watched from the start, so a process that ends at once shows its exit.
-                watch(service.name, in: pod)
-                if separate, let address = network.addresses[service.name] {
-                    guard let pid = await pod.containerPID(service.name) else { throw PierError("no PID for \(service.name)") }
-                    pids[service.name] = pid
-                    let (code, out) = try await exec(["/bin/sh", "-c", PodNetwork.wire(pid: pid, index: index, address: address)], in: PodNetwork.helper)
-                    guard code == 0 else {
-                        try? await Task.sleep(for: .milliseconds(300))
-                        if case .exited = snapshot.services[service.name] { continue }
-                        throw PierError("could not give \(service.name) its network:\n\(out.suffix(600))")
-                    }
-                    say(service.name, "network: \(address) on br0")
-                    for p in service.ports + (service.sshPort.map { [PortMapping(host: $0, container: $0)] } ?? []) {
-                        let (c2, o2) = try await exec(["/bin/sh", "-c", PodNetwork.forward(port: p.host, to: address, target: p.container)], in: PodNetwork.helper)
-                        if c2 != 0 { say(service.name, "port \(p.host): \(o2)") }
-                    }
-                }
-                if case .exited = snapshot.services[service.name] { continue }
-                say(service.name, "running")
-                setService(service.name, .running)
-                await useHTTPSRepositories(in: service.name)
-                await applyScanning(service)
-                await runStartup(service)
-                if let port = service.sshPort {
-                    let result = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
-                    if let (code, out) = result, code == 0 {
-                        say(service.name, "sshd on port \(port) (root / pier)")
-                    } else {
-                        say(service.name, "sshd did not start: \(result?.1 ?? "")")
-                    }
-                }
+                try await settle(service, index: index, address: separate ? network.addresses[service.name] : nil, in: pod)
             } catch {
                 setService(service.name, .failed(String(describing: error)))
                 log(for: service.name).note("failed to start: \(error)")
@@ -574,6 +545,162 @@ public actor PodRunner {
         }
         try checkCancelled()
         setPod(.running)
+    }
+
+    /// A started service: watched, given its network and ports (with
+    /// networks of their own), then its startup steps.
+    private func settle(_ service: ServiceSpec, index: Int, address: String?, in pod: LinuxPod) async throws {
+        // Watched from the start, so a process that ends at once shows its exit.
+        watch(service.name, in: pod)
+        if let address {
+            guard let pid = await pod.containerPID(service.name) else { throw PierError("no PID for \(service.name)") }
+            pids[service.name] = pid
+            let (code, out) = try await exec(["/bin/sh", "-c", PodNetwork.wire(pid: pid, index: index, address: address)], in: PodNetwork.helper)
+            guard code == 0 else {
+                try? await Task.sleep(for: .milliseconds(300))
+                if case .exited = snapshot.services[service.name] { return }
+                throw PierError("could not give \(service.name) its network:\n\(out.suffix(600))")
+            }
+            say(service.name, "network: \(address) on br0")
+            for p in service.ports + (service.sshPort.map { [PortMapping(host: $0, container: $0)] } ?? []) {
+                let (c2, o2) = try await exec(["/bin/sh", "-c", PodNetwork.forward(port: p.host, to: address, target: p.container)], in: PodNetwork.helper)
+                if c2 != 0 { say(service.name, "port \(p.host): \(o2)") }
+            }
+        }
+        if case .exited = snapshot.services[service.name] { return }
+        say(service.name, "running")
+        setService(service.name, .running)
+        await useHTTPSRepositories(in: service.name)
+        await applyScanning(service)
+        await runStartup(service)
+        await installAgentAccess(service)
+        if let port = service.sshPort {
+            let result = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
+            if let (code, _) = result, code == 0 {
+                say(service.name, "sshd on port \(port) (root / pier)")
+            } else {
+                say(service.name, "sshd did not start: \(result?.1 ?? "")")
+            }
+        }
+    }
+
+    /// How a service's container is set up, at boot or added later.
+    private static func configure(
+        _ c: inout LinuxPod.ContainerConfiguration, _ service: ServiceSpec, _ imageConfig: ImageConfig?,
+        out: LogBuffer, cpus: Int, hosts: Hosts, separate: Bool
+    ) {
+        if let imageConfig {
+            c.process = LinuxProcessConfiguration(from: imageConfig)
+        }
+        if !service.command.isEmpty {
+            c.process.arguments = service.command
+        } else if service.entrypoint != nil || service.args != nil {
+            // Compose: a new entrypoint drops the image's command.
+            let entry = service.entrypoint ?? imageConfig?.entrypoint ?? []
+            let args = service.args ?? (service.entrypoint == nil ? imageConfig?.cmd ?? [] : [])
+            c.process.arguments = entry + args
+        }
+        if let wd = service.workingDir { c.process.workingDirectory = wd }
+        if let u = service.user { c.process.user = ContainerizationOCI.User(username: u) }
+        if service.privileged == true { c.process.capabilities = .allCapabilities }
+        for v in service.volumes ?? [] {
+            c.mounts.append(.sharedMount(name: Self.workVolume, destination: v.target, options: v.readOnly ? ["ro"] : [], subpath: v.source))
+        }
+        c.process.environmentVariables.append(contentsOf: service.environment)
+        c.process.stdout = out
+        c.process.stderr = out
+        c.cpus = cpus
+        c.memoryInBytes = service.memoryMiB.mib()
+        c.hostname = service.name
+        c.hosts = hosts
+        if separate { c.network = .isolated }
+        c.dns = DNS(nameservers: [CrateNetwork.nameserver])
+        if service.mountsWork {
+            c.mounts.append(.sharedMount(name: Self.workVolume, destination: "/work"))
+        }
+    }
+
+    /// Adds a service to the running pod without restarting it: its rootfs
+    /// goes into one of the VM's free disk slots. It gets the next address;
+    /// its ports reach the other services, not the iPad, until the pod
+    /// starts again (the VM's port forwards are set when it boots).
+    public func addService(_ service: ServiceSpec) async throws {
+        guard let pod, var running = currentSpec, snapshot.pod == .running else {
+            throw PierError("the pod is not running")
+        }
+        guard !running.services.contains(where: { $0.name == service.name }) else {
+            throw PierError("\(service.name) is already in the pod")
+        }
+        setService(service.name, .starting)
+        say(service.name, "adding to the running pod")
+        let (rootfs, imageConfig) = try await rootfs(for: service)
+        running.services.append(service)
+        currentSpec = running
+        hotAdded.insert(service.name)
+        let index = (netIndex.values.max() ?? -1) + 1
+        netIndex[service.name] = index
+        do {
+            try await attach(service, rootfs, imageConfig, index: index, in: pod, spec: running)
+        } catch {
+            setService(service.name, .failed(String(describing: error)))
+            say(service.name, "failed to start: \(error)")
+            throw error
+        }
+        // The others learn its name.
+        if running.usesSeparateNetworks {
+            let address = PodNetwork.address(index)
+            let line = ([address, service.name] + (service.aliases ?? [])).joined(separator: " ")
+            for other in running.services where other.name != service.name && snapshot.services[other.name] == .running {
+                _ = try? await exec(["/bin/sh", "-c", "echo '\(line)' >> /etc/hosts"], in: other.name)
+            }
+        }
+    }
+
+    /// Puts an added service's container into the pod and starts it.
+    private func attach(
+        _ service: ServiceSpec, _ rootfs: Containerization.Mount, _ imageConfig: ImageConfig?,
+        index: Int, in pod: LinuxPod, spec: PodSpec
+    ) async throws {
+        let out = log(for: service.name)
+        let separate = spec.usesSeparateNetworks
+        let address = PodNetwork.address(index)
+        var hosts = bootHosts ?? Hosts(entries: [])
+        if separate {
+            hosts.entries.append(Hosts.Entry(ipAddress: address, hostnames: [service.name] + (service.aliases ?? [])))
+        }
+        let cpus = spec.cpus
+        let finalHosts = hosts
+        try await pod.addContainer(service.name, rootfs: rootfs) { c in
+            Self.configure(&c, service, imageConfig, out: out, cpus: cpus, hosts: finalHosts, separate: separate)
+        }
+        say(service.name, "starting")
+        try await pod.startContainer(service.name)
+        try await settle(service, index: index, address: separate ? address : nil, in: pod)
+    }
+
+    /// Takes a service added while the pod runs out of it: stopped, its
+    /// container forgotten, its disk slot free. `deleteDisk` drops its root
+    /// filesystem too (an agent's container leaves nothing behind).
+    public func removeService(_ name: String, deleteDisk: Bool) async throws {
+        guard let pod, var running = currentSpec else { throw PierError("the pod is not running") }
+        guard hotAdded.contains(name) else {
+            throw PierError("\(name) started with the pod: removing it restarts the pod")
+        }
+        spawnTimers[name]?.cancel()
+        spawnTimers[name] = nil
+        if snapshot.services[name] != .stopped { try? await stopService(name) }
+        try await pod.removeContainer(name)
+        hotAdded.remove(name)
+        netIndex[name] = nil
+        running.services.removeAll { $0.name == name }
+        currentSpec = running
+        agentTokens = agentTokens.filter { $0.value != name }
+        if deleteDisk { try? FileManager.default.removeItem(at: serviceDir(name)) }
+        update {
+            $0.services[name] = nil
+            $0.spawned[name] = nil
+        }
+        say(name, "removed from the pod")
     }
 
     private func watch(_ name: String, in pod: LinuxPod) {
@@ -786,6 +913,7 @@ public actor PodRunner {
         }
         guard let pod else { return }
         setPod(.stopping)
+        stopAgentAPI()
         restartTasks.values.forEach { $0.cancel() }
         restartTasks.removeAll()
         // Everything written reaches the disks before the machine goes.
@@ -802,6 +930,12 @@ public actor PodRunner {
         }
         self.pod = nil
         pids = [:]
+        // What agents started goes with the pod, disks and all.
+        for name in snapshot.spawned.keys { try? FileManager.default.removeItem(at: serviceDir(name)) }
+        update { s in
+            for name in s.spawned.keys { s.services[name] = nil }
+            s.spawned = [:]
+        }
         watchers.forEach { $0.cancel() }
         watchers.removeAll()
         update { s in
@@ -979,19 +1113,34 @@ public actor PodRunner {
         restartTasks[service.name]?.cancel()
         restartTasks[service.name] = nil
         let booted = currentSpec ?? spec
-        guard let index = booted.services.firstIndex(where: { $0.name == service.name }) else {
+        guard let place = booted.services.firstIndex(where: { $0.name == service.name }),
+              let index = netIndex[service.name] else {
             throw PierError("\(service.name) was added after the pod started: start the pod again")
         }
         var updated = booted
-        updated.services[index] = service
+        updated.services[place] = service
         currentSpec = updated
         setService(service.name, .starting)
         say(service.name, "starting again")
+        if hotAdded.contains(service.name) {
+            // Its disk went back when it stopped: it is added again.
+            do {
+                try await pod.removeContainer(service.name)
+                let (rootfs, imageConfig) = try await rootfs(for: service)
+                try await attach(service, rootfs, imageConfig, index: index, in: pod, spec: updated)
+            } catch {
+                setService(service.name, .failed(String(describing: error)))
+                say(service.name, "failed to start: \(error)")
+                throw error
+            }
+            return
+        }
         do {
             try await pod.recreateContainer(service.name)
             try await pod.startContainer(service.name)
             watch(service.name, in: pod)
-            if booted.usesSeparateNetworks, let address = PodNetwork(services: booted.services).addresses[service.name] {
+            if booted.usesSeparateNetworks {
+                let address = PodNetwork.address(index)
                 guard let pid = await pod.containerPID(service.name) else { throw PierError("no PID for \(service.name)") }
                 pids[service.name] = pid
                 let (code, out) = try await exec(["/bin/sh", "-c", PodNetwork.wire(pid: pid, index: index, address: address)], in: PodNetwork.helper)

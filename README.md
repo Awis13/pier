@@ -43,6 +43,14 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
 - **A real terminal.** A shell straight into the container (a PTY over vsock, no SSH), with
   tabs and a full-screen mode. One button installs OpenSSH and tmux if you'd rather use
   an SSH client.
+- **An API for agents.** Give a service agent access and an agent in it (Claude Code, a
+  script) works the pod: `pier ps`, `pier logs db`, `pier exec db psql ...`, and at the top
+  tier `pier spawn alpine` for scratch containers of its own, which join the running pod
+  without a restart and go away after a while. Four tiers (off, observe, operate, admin);
+  each service gets a token, `/pier/AGENT.md` describing what it may do, the `pier` command
+  and a Claude Code skill. See [Agent API](#agent-api).
+- **Add services while the pod runs.** The VM boots with spare disk slots, so a new service
+  (or an agent's container) joins in about a second instead of restarting the pod.
 - **Keeps running.** Pods keep going in the background (coarse location keep-alive, on by
   default, never stored or sent).
 - **Package managers that work.** apt, zypper and others are moved to HTTPS with a current CA
@@ -113,6 +121,28 @@ A few details worth knowing:
   Compose volumes are directories under `/work/.pier/volumes`. Files next to a Compose file are
   copied into Pier and written to `/work/.pier/projects` each time the pod starts.
 
+## Agent API
+
+Turn on **Agent Access** in a service's settings. While the pod runs, Pier answers at
+`http://172.20.0.1:7070` on the pod's network (the network helper carries it to the app over
+vsock), and writes into the service:
+
+- `/pier/token`: the service's token, sent as `Authorization: Bearer <token>`;
+- `/pier/AGENT.md`: what this tier allows, the other services, every endpoint with examples;
+- `/usr/local/bin/pier`: the API from a shell (curl, wget or plain bash);
+- `/root/.claude/skills/pier/SKILL.md`: a skill that points Claude Code at all of that.
+
+| Tier | Adds |
+|---|---|
+| Observe | `GET /v1/services`, `GET /v1/services/NAME/logs` |
+| Operate | `POST /v1/services/NAME/exec`, `start`, `stop`, `restart` (not its own service) |
+| Admin | `POST /v1/spawn`, `POST /v1/services/NAME/remove` (only containers it started) |
+
+An agent's containers are named after it (`agent-scan`), get the next address on the bridge
+and a name in the other services' `/etc/hosts`, and go away with their disks when their time
+is up (an hour unless asked, at most a day), when removed, or when the pod stops. Each agent
+may run four at a time, up to 1 GB each; Pier lists them under **Started by Agents**.
+
 ## Requirements
 
 - An iPad with Apple silicon on iPadOS 26 or later. A Mac with Apple silicon for `pierctl`.
@@ -182,8 +212,9 @@ codesign -f -s - --entitlements pierctl.entitlements .build/debug/pierctl
 
 - **Building images.** Dropping a Dockerfile, or `build:` in Compose, isn't supported yet.
   Use an image from a registry.
-- Adding or removing a service restarts the pod (crate can't attach disks to a running VM).
-  Stopping and starting existing services doesn't.
+- A service added while the pod runs takes one of four spare disk slots; with none left, or
+  when a service is removed or changed, the pod restarts. Its ports reach the other services,
+  not the iPad, until the pod restarts.
 - Forwarded ports are TCP only.
 - Bind mounts are copies taken at import, not live folders.
 

@@ -40,6 +40,23 @@ struct RootView: View {
                         pod.spec.services.move(fromOffsets: from, toOffset: to)
                     }
                 }
+                if !pod.snapshot.spawned.isEmpty {
+                    Section {
+                        ForEach(pod.snapshot.spawned.keys.sorted(), id: \.self) { name in
+                            SpawnedRow(name: name, info: pod.snapshot.spawned[name]!,
+                                       state: pod.snapshot.services[name]) { pod.removeSpawned(name) }
+                        }
+                        if pod.snapshot.spawned.count > 1 {
+                            Button("Remove All", role: .destructive) {
+                                for name in pod.snapshot.spawned.keys { pod.removeSpawned(name) }
+                            }
+                        }
+                    } header: {
+                        Text("Started by Agents")
+                    } footer: {
+                        Text("Containers agents started through Pier's API. Each goes away when its time is up or the pod stops, with its disk.")
+                    }
+                }
             }
             .navigationTitle("Pier")
             .toolbar {
@@ -802,3 +819,35 @@ enum Checks {
     }
 }
 
+
+/// A container an agent started: who asked, what it runs, when it goes.
+struct SpawnedRow: View {
+    let name: String
+    let info: SpawnInfo
+    let state: ServiceState?
+    let remove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle().fill(state == .running ? Color.green : Color.secondary).frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name).font(.body.monospaced()).lineLimit(1)
+                Group {
+                    if let e = info.expires {
+                        Text("by \(info.owner) · \(info.image) · until ") + Text(e, style: .time)
+                    } else {
+                        Text("by \(info.owner) · \(info.image)")
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Button(role: .destructive, action: remove) { Image(systemName: "xmark.circle.fill") }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Remove \(name)")
+        }
+        .swipeActions { Button("Remove", role: .destructive, action: remove) }
+        .contextMenu { Button("Remove", systemImage: "trash", role: .destructive, action: remove) }
+    }
+}

@@ -75,6 +75,9 @@ public struct ServiceSpec: Codable, Hashable, Sendable, Identifiable {
     /// Shell commands run in the background each time the service starts:
     /// daemons a container has no init to start (sshd, tailscaled, ...).
     public var startup: [String]?
+    /// What an agent in this service may do with the pod through the Agent
+    /// API (see `AgentAPI.swift`); unset is off.
+    public var agentAccess: AgentTier?
 
     public var id: String { name }
 
@@ -199,6 +202,10 @@ public struct PodSpec: Codable, Hashable, Sendable {
     /// does; off, they all share the VM's. Unset means on.
     public var separateNetworks: Bool?
     public var usesSeparateNetworks: Bool { separateNetworks ?? true }
+    /// Empty disks the VM boots with, so services can be added while it
+    /// runs (each added service takes one). Unset means 4.
+    public var diskSlots: Int?
+    public var slots: Int { diskSlots ?? 4 }
 
     public init(
         services: [ServiceSpec] = [],

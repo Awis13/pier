@@ -16,6 +16,7 @@ struct ServiceEditor: View {
     @State private var memory: UInt64 = 512
     @State private var mountsWork = true
     @State private var honestScanning = false
+    @State private var agentAccess = AgentTier.off
     @State private var startup = ""
     @State private var showingCatalog = false
     @State private var picked: String?
@@ -61,6 +62,17 @@ struct ServiceEditor: View {
                     Text("On Start")
                 } footer: {
                     Text("One command a line, run in the background every time the service starts: daemons a container has no init to start, like sshd or tailscaled. Output goes to /var/log/pier-startup.log.")
+                }
+                Section {
+                    Picker("Agent Access", selection: $agentAccess) {
+                        ForEach(AgentTier.allCases, id: \.self) { Text($0.title).tag($0) }
+                    }
+                } header: {
+                    Text("Agents")
+                } footer: {
+                    Text(agentAccess == .off
+                        ? "An agent in this service (Claude Code, a script) can work the pod through Pier's API. Off: no access."
+                        : "\(agentAccess.summary) The service finds how in /pier/AGENT.md and the pier command; a skill for Claude Code comes along. Applies at once to a running service.")
                 }
                 Section {
                     Toggle("Honest network scans", isOn: $honestScanning)
@@ -138,6 +150,7 @@ struct ServiceEditor: View {
         memory = s.memoryMiB
         mountsWork = s.mountsWork
         honestScanning = s.honestScanning ?? false
+        agentAccess = s.agentAccess ?? .off
         startup = (s.startup ?? []).joined(separator: "\n")
     }
 
@@ -175,6 +188,7 @@ struct ServiceEditor: View {
         s.memoryMiB = memory
         s.mountsWork = mountsWork
         s.honestScanning = honestScanning ? true : nil
+        s.agentAccess = agentAccess == .off ? nil : agentAccess
         let lines = startup.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         s.startup = lines.isEmpty ? nil : lines
         return s

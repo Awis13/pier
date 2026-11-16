@@ -36,6 +36,9 @@ struct PierCtl: AsyncParsableCommand {
     @Option(name: .long, help: "After start, restart this service alone")
     var restart: String?
 
+    @Flag(name: .long, help: "After start, add services to the running pod, stop one, add another into its disk slot, start the first again")
+    var hotCheck = false
+
     @Flag(name: .long, help: "Only read the Compose file and print the services")
     var check = false
 
@@ -103,6 +106,32 @@ struct PierCtl: AsyncParsableCommand {
             let t0 = ContinuousClock.now
             try await runner.restartService(svc, in: spec)
             print("[restart] \(name) in \(ContinuousClock.now - t0)")
+        }
+        if hotCheck {
+            func run(_ service: String, _ command: String) async -> String {
+                guard let (code, out) = try? await runner.exec(["/bin/sh", "-c", command], in: service) else { return "(exec failed)" }
+                return "exit \(code): \(out.trimmingCharacters(in: .whitespacesAndNewlines))"
+            }
+            let hot1 = ServiceSpec(name: "hot1", image: "docker.io/library/alpine:3.20", command: ["sleep", "infinity"])
+            let hot2 = ServiceSpec(name: "hot2", image: "docker.io/library/debian:trixie", command: ["sleep", "infinity"])
+            var t0 = ContinuousClock.now
+            try await runner.addService(hot1)
+            print("[hot] hot1 added in \(ContinuousClock.now - t0)")
+            print("[hot] hot1 os: \(await run("hot1", "head -1 /etc/os-release; echo marked > /root/mark; sync; echo wrote $(wc -c < /root/mark) bytes"))")
+            if let first = spec.services.first {
+                print("[hot] \(first.name) -> hot1: \(await run(first.name, "getent hosts hot1; ping -c1 -W2 hot1 >/dev/null && echo ping-ok || echo no-ping"))")
+            }
+            try await runner.stopService("hot1")
+            print("[hot] hot1 stopped")
+            t0 = ContinuousClock.now
+            try await runner.addService(hot2)
+            print("[hot] hot2 added in \(ContinuousClock.now - t0) (into hot1's slot)")
+            print("[hot] hot2 os: \(await run("hot2", "head -1 /etc/os-release; echo mark=$(ls /root/mark 2>&1)"))")
+            t0 = ContinuousClock.now
+            try await runner.startService(hot1, in: spec)
+            print("[hot] hot1 started again in \(ContinuousClock.now - t0)")
+            print("[hot] hot1 mark: \(await run("hot1", "head -1 /etc/os-release; echo mark=$(cat /root/mark 2>&1) size=$(wc -c < /root/mark 2>&1)"))")
+            print("[hot] df: \(await run("hot2", "cat /proc/partitions | tail -n +3 | awk '{print $4\"=\"$3}' | tr '\\n' ' '"))")
         }
         for e in exec {
             guard let colon = e.firstIndex(of: ":") else { continue }

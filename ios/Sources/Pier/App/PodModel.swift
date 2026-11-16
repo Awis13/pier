@@ -116,11 +116,38 @@ final class PodModel {
         }
     }
 
-    /// Changes the services; a running pod restarts with them, since crate
-    /// cannot add disks to a running machine.
+    /// Changes the services. New ones join a running pod in its free disk
+    /// slots, and agent access changes at once; anything else (or no free
+    /// slot) restarts the pod with them.
     func change(jit: JITSession, _ body: (inout [ServiceSpec]) -> Void) {
+        let old = spec.services
         let before = Set(spec.services.map(\.name))
         body(&spec.services)
+        if snapshot.pod == .running, Set(spec.services.map(\.name)).isSuperset(of: before) {
+            let added = spec.services.filter { !before.contains($0.name) }
+            let changed = spec.services.filter { s in old.first { $0.name == s.name }.map { $0 != s } ?? false }
+            let onlyAccess = changed.allSatisfy { s in
+                guard var o = old.first(where: { $0.name == s.name }) else { return false }
+                o.agentAccess = s.agentAccess
+                return o == s
+            }
+            if onlyAccess {
+                Task {
+                    for s in changed { await runner.setAgentAccess(s) }
+                    for s in added {
+                        do {
+                            try await runner.addService(s)
+                        } catch {
+                            AppLog.write("pier: adding \(s.name) live failed (\(error)); restarting the pod")
+                            await runner.stop()
+                            await run(jit: jit)
+                            return
+                        }
+                    }
+                }
+                return
+            }
+        }
         // A removed service takes its disk with it, as `docker rm` does; its
         // image stays, so adding it again starts clean and fast.
         let removed = before.subtracting(spec.services.map(\.name))
@@ -159,6 +186,18 @@ final class PodModel {
         terminals.append(tab)
         selectedTerminal[deck] = tab.id
         return tab
+    }
+
+    /// Removes a container an agent started, with its disk.
+    func removeSpawned(_ name: String) {
+        for t in terminals where t.service == name { closeTerminal(t) }
+        Task {
+            do {
+                try await runner.removeService(name, deleteDisk: true)
+            } catch {
+                AppLog.write("pier: removing \(name): \(error)")
+            }
+        }
     }
 
     func closeTerminal(_ tab: TermTab) {

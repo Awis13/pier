@@ -16,14 +16,17 @@ struct PodNetwork {
 
     init(services: [ServiceSpec]) {
         var a: [String: String] = [:]
-        for (i, s) in services.enumerated() { a[s.name] = "\(Self.subnet).\(10 + i)" }
+        for (i, s) in services.enumerated() { a[s.name] = Self.address(i) }
         addresses = a
     }
+
+    /// The address of the service in place `index` on the bridge.
+    static func address(_ index: Int) -> String { "\(subnet).\(10 + index)" }
 
     /// The helper's command: the tools it needs, then waiting.
     static let helperCommand = [
         "/bin/sh", "-c",
-        "apk add --no-cache iproute2 iptables iptables-legacy util-linux-misc >/tmp/apk.log 2>&1; touch /tmp/pier-net-ready; exec sleep infinity",
+        "apk add --no-cache iproute2 iptables iptables-legacy util-linux-misc socat >/tmp/apk.log 2>&1; touch /tmp/pier-net-ready; exec sleep infinity",
     ]
 
     /// iptables for the kernel's legacy tables (the VM's kernel has no nftables).
