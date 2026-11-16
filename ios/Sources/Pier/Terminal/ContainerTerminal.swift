@@ -40,7 +40,7 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
         self.deck = deck
         self.title = number == 1 ? service : "\(service) \(number)"
         self.pod = pod
-        self.view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        self.view = PierTerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         view.terminalDelegate = self
         suggester = Suggester(view: view, service: service)
