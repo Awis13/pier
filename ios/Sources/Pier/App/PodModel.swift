@@ -362,6 +362,8 @@ final class PodModel {
     /// The service whose editor or delete question is open (set from its menu).
     var editRequest: String?
     var deleteRequest: String?
+    /// The service whose disk is to be made again (asked from its menu).
+    var resetRequest: String?
 
     /// Services SSH is being installed in right now.
     var installingSSH: Set<String> = []

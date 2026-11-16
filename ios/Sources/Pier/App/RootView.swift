@@ -181,6 +181,18 @@ struct RootView: View {
         } message: {
             Text("What was installed in it goes; its image and /work stay.")
         }
+        .confirmationDialog(
+            "Reset the disk of \(pod.resetRequest ?? "")?",
+            isPresented: Binding(get: { pod.resetRequest != nil }, set: { if !$0 { pod.resetRequest = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Reset Disk", role: .destructive) {
+                if let name = pod.resetRequest, let s = pod.spec.services.first(where: { $0.name == name }) { pod.reset(s) }
+                pod.resetRequest = nil
+            }
+        } message: {
+            Text("The service's root filesystem is made again from its image (already downloaded), now with room for \(32) GB. What it wrote outside /work goes.")
+        }
         .sheet(isPresented: $showingSettings) { PodSettings() }
         .sheet(isPresented: $showingPodLog) { PodLogView() }
         .sheet(isPresented: $showingStorage) { StorageView() }
@@ -679,7 +691,7 @@ struct ServiceMenu: View {
         }
         Section {
             Button { pod.editRequest = service.name } label: { Label("Edit...", systemImage: "pencil") }
-            Button { pod.reset(service) } label: { Label("Unpack Image Again", systemImage: "arrow.counterclockwise") }
+            Button { pod.resetRequest = service.name } label: { Label("Reset Disk...", systemImage: "arrow.counterclockwise") }
                 .disabled(pod.isActive)
         }
         Section {

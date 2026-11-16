@@ -168,6 +168,9 @@ public actor PodRunner {
     public static let defaultInitImage = "ghcr.io/apple/containerization/vminit:0.54.0"
     static let podID = "pier"
     static let workVolume = "work"
+    /// A service's root filesystem: room for big images and what they keep
+    /// (models, packages); sparse, so the iPad gives only what is written.
+    static let rootfsGiB: UInt64 = 32
     static let journal = EXT4.JournalConfig(defaultMode: .ordered)
     static let arm64 = ContainerizationOCI.Platform(arch: "arm64", os: "linux", variant: nil)
 
@@ -330,7 +333,7 @@ public actor PodRunner {
             try? FileManager.default.removeItem(at: path)
             setService(name, .preparing("Unpacking"))
             let manifest = try await image.manifest(for: Self.arm64)
-            say(name, "unpacking \(manifest.layers.count) layers into an ext4 root filesystem (8 GB, sparse)")
+            say(name, "unpacking \(manifest.layers.count) layers into an ext4 root filesystem (\(Self.rootfsGiB) GB, sparse)")
             let meter = Meter(label: "unpacked", unit: .bytes) { [weak self] line in
                 self?.say(name, line)
                 self?.setService(name, .preparing(line))
@@ -339,7 +342,7 @@ public actor PodRunner {
             // Journalled (ordered, as Linux mounts ext4 by default): a pod that
             // stops without unmounting, when iOS ends Pier say, keeps a
             // consistent filesystem instead of blocks given to two files.
-            let unpacker = EXT4Unpacker(capacityInBytes: 8.gib(), journal: Self.journal)
+            let unpacker = EXT4Unpacker(capacityInBytes: Self.rootfsGiB.gib(), journal: Self.journal)
             _ = try await unpacker.unpack(image, for: Self.arm64, at: path, progress: meter.handler)
             try digest.write(to: stamp, atomically: true, encoding: .utf8)
             say(name, "unpacked in \(Meter.seconds(ContinuousClock.now - started)): \(meter.summary)")
@@ -416,6 +419,13 @@ public actor PodRunner {
             setPod(.preparing("Preparing \(service.name)"))
             try checkCancelled()
             let (rootfs, config) = try await rootfs(for: service)
+            // A full disk fails the whole VM as it boots: that service waits.
+            if let space = Self.ext4Space(of: URL(fileURLWithPath: rootfs.source)), space.free < 64 << 20 {
+                let why = "its disk is full (\(space.total >> 30) GB): Reset Disk in its menu makes it again from the image"
+                setService(service.name, .failed(why))
+                say(service.name, "not started: \(why)")
+                continue
+            }
             prepared.append((service, rootfs, config))
             setService(service.name, .starting)
         }
@@ -1405,4 +1415,20 @@ enum GPUShim {
     static let directory = "/usr/local/lib/pier"
     static let volumePath = ".pier/gpu"
     static let data: Data? = Bundle.module.url(forResource: "libggml-rpc", withExtension: "so").flatMap { try? Data(contentsOf: $0) }
+}
+
+extension PodRunner {
+    /// Free and total bytes of an ext4 image, from its superblock (as the
+    /// guest last left it).
+    static func ext4Space(of url: URL) -> (free: UInt64, total: UInt64)? {
+        guard let h = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? h.close() }
+        guard (try? h.seek(toOffset: 1024)) != nil, let sb = try? h.read(upToCount: 1024), sb.count == 1024 else { return nil }
+        func u32(_ o: Int) -> UInt64 { UInt64(sb[o]) | UInt64(sb[o + 1]) << 8 | UInt64(sb[o + 2]) << 16 | UInt64(sb[o + 3]) << 24 }
+        guard sb[0x38] == 0x53, sb[0x39] == 0xEF else { return nil }      // the ext4 magic
+        let blockSize = UInt64(1024) << u32(0x18)
+        let total = (u32(0x04) | u32(0x150) << 32) * blockSize
+        let free = (u32(0x0C) | u32(0x158) << 32) * blockSize
+        return (free, total)
+    }
 }
