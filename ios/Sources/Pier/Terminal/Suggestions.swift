@@ -20,7 +20,15 @@ final class CommandHistory {
 
     private init() {
         if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode([HistoryEntry].self, from: data) {
-            entries = saved
+            // Commands read with a prompt's second line in front of them
+            // (before that was fixed) lose it.
+            entries = saved.map { e in
+                var e = e
+                if let r = e.command.range(of: #"^[└╰─]+[#$%>] "#, options: .regularExpression) {
+                    e.command.removeSubrange(r)
+                }
+                return e
+            }
         }
     }
 
@@ -58,11 +66,10 @@ final class Suggester {
     private(set) var remainder: String?
     var onTap: (() -> Void)?
     private var inputRow: Int?         // the buffer row typing starts on, with trimmed lines counted
+    private var inputCol = 0           // and its column: the cells before it are the prompt
     private var stale = false
     private let ghost = UILabel()
 
-    private static let markB = Array("\u{1b}]133;B".utf8)
-    private static let markC = Array("\u{1b}]133;C".utf8)
 
     init(view: TerminalView, service: String) {
         self.view = view
@@ -74,25 +81,34 @@ final class Suggester {
         view.addSubview(ghost)
     }
 
-    /// Before output reaches the terminal: a command starting (C) is read
-    /// from the screen while it still shows what was typed.
-    func before(_ bytes: [UInt8]) {
-        guard let v = view, Self.contains(Self.markC, in: bytes) else { return }
-        if let typed = typedText(v.getTerminal(), toCursor: false) {
-            CommandHistory.shared.add(typed, service: service, directory: directory)
+    /// A mark of the shell's, with the terminal as the mark left it: B notes
+    /// where typing starts; C puts what was typed into the history and
+    /// returns it.
+    @discardableResult
+    func mark(_ body: String) -> String? {
+        guard let v = view else { return nil }
+        let t = v.getTerminal()
+        switch body.first {
+        case "B":
+            if !t.isCurrentBufferAlternate {
+                let (x, y) = t.getCursorLocation()
+                inputRow = liveTop(v, t) + y + t.buffer.totalLinesTrimmed
+                inputCol = x
+            }
+        case "C":
+            let typed = typedText(t, toCursor: false)
+            if let typed { CommandHistory.shared.add(typed, service: service, directory: directory) }
+            inputRow = nil
+            hide()
+            return typed
+        default:
+            break
         }
-        inputRow = nil
-        hide()
+        return nil
     }
 
-    /// After output reached it: a prompt ready for typing (B) is noted, and
-    /// the suggestion follows what is typed now.
-    func after(_ bytes: [UInt8]) {
-        guard let v = view else { return }
-        let t = v.getTerminal()
-        if Self.contains(Self.markB, in: bytes), !t.isCurrentBufferAlternate {
-            inputRow = liveTop(v, t) + t.getCursorLocation().y + t.buffer.totalLinesTrimmed
-        }
+    /// After output: the suggestion follows what is typed now.
+    func refresh() {
         stale = false
         update()
     }
@@ -135,12 +151,15 @@ final class Suggester {
                              width: min(room, ghost.sizeThatFits(.zero).width), height: cell.height)
         ghost.isHidden = room <= 0
         v.bringSubviewToFront(ghost)
-        remainder = rest
+        remainder = rest.joined(separator: " "))) full \"\(full)\" input row \(inputRow ?? -1) cursor \(cx),\(cy) top \(liveTop(v, t)) trimmed \(t.buffer.totalLinesTrimmed)") }
     }
 
-    /// The typed text from where typing starts: to the cursor, or all of it.
-    /// Only the cells the terminal marked as input count; anything after the
-    /// cursor but blanks means an edit in the middle, which gets nothing.
+    /// The typed text from where typing starts (the column of the B mark,
+    /// not the cells marked as input: a prompt of two lines gets its second
+    /// line marked so) to the cursor, or all of it once the command runs. A
+    /// line that does not wrap into the next ends the command; for the
+    /// suggestion, anything but blanks after the cursor means an edit in
+    /// the middle, which gets nothing.
     private func typedText(_ t: Terminal, toCursor: Bool) -> String? {
         guard let v = view, let abs = inputRow else { return nil }
         let start = abs - t.buffer.totalLinesTrimmed
@@ -150,15 +169,25 @@ final class Suggester {
         var typed = ""
         for r in start...row {
             guard let line = t.getScrollInvariantLine(row: r + t.buffer.totalLinesTrimmed) else { return nil }
-            let cols = (0..<t.cols).filter { t.semanticContent(at: Position(col: $0, row: r)) == .input }
-            if r < row || !toCursor {
-                for c in cols { typed += Self.cellText(line, c, t) }
-                continue
+            if r > start {
+                // In SwiftTerm the continuation row carries the wrapped flag.
+                guard line.isWrapped else {
+                    if toCursor { return nil }
+                    break
+                }
             }
-            for c in cols where c < cx { typed += Self.cellText(line, c, t) }
-            if cols.contains(where: { $0 >= cx && Self.cellText(line, $0, t) != " " }) { return nil }
+            let from = r == start ? inputCol : 0
+            let to = r == row && toCursor ? cx : t.cols
+            if from < to { for c in from..<to { typed += Self.cellText(line, c, t) } }
+            if r == row, toCursor, cx < t.cols, (cx..<t.cols).contains(where: { Self.cellText(line, $0, t) != " " }) {
+                return nil
+            }
         }
-        return toCursor ? typed : typed.trimmingCharacters(in: .whitespaces).isEmpty ? nil : typed.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+        if !toCursor {
+            typed = typed.replacingOccurrences(of: "\\s+$", with: "", options: .regularExpression)
+            return typed.trimmingCharacters(in: .whitespaces).isEmpty ? nil : typed
+        }
+        return typed
     }
 
     /// Where the live screen's first row is in the buffer (not the scrolled view's).
@@ -176,13 +205,6 @@ final class Suggester {
         return ch == "\u{0}" ? " " : String(ch)
     }
 
-    private static func contains(_ needle: [UInt8], in hay: [UInt8]) -> Bool {
-        guard hay.count >= needle.count else { return false }
-        for i in 0...(hay.count - needle.count) where hay[i] == needle[0] && Array(hay[i..<i + needle.count]) == needle {
-            return true
-        }
-        return false
-    }
 }
 
 /// Cmd-R: every service's commands, newest first, found by all the words typed.

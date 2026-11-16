@@ -8,7 +8,7 @@ import UIKit
 /// One terminal tab: a shell in a service, and the screen that shows it. The
 /// screen lives as long as the tab, so switching tabs or services keeps it.
 @MainActor
-final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDelegate {
+final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDelegate, UIEditMenuInteractionDelegate, UIGestureRecognizerDelegate {
     let id = UUID()
     let service: String
     /// The set of tabs it belongs to: the service's name for its page and
@@ -28,6 +28,12 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     private weak var pod: PodModel?
     /// The history's suggestion at the prompt, and the commands that ran.
     private(set) var suggester: Suggester!
+    /// Each command and its output, drawn as a block.
+    private(set) var blocks: CommandBlocks!
+    private var splitter = MarkSplitter()
+    private var editMenu: UIEditMenuInteraction?
+    private var menuPoint = CGPoint.zero
+    private var dragStart: Position?
 
     init(service: String, deck: String, number: Int, pod: PodModel) {
         self.service = service
@@ -38,6 +44,22 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
         super.init()
         view.terminalDelegate = self
         suggester = Suggester(view: view, service: service)
+        blocks = CommandBlocks(view: view)
+        // A mouse: right click for the menu, drag to select (fingers still
+        // scroll, and select with a long press, as before).
+        let menu = UIEditMenuInteraction(delegate: self)
+        view.addInteraction(menu)
+        editMenu = menu
+        let pointer = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        let right = UITapGestureRecognizer(target: self, action: #selector(rightClick(_:)))
+        right.buttonMaskRequired = .secondary
+        right.allowedTouchTypes = pointer
+        view.addGestureRecognizer(right)
+        let drag = UIPanGestureRecognizer(target: self, action: #selector(pointerDrag(_:)))
+        drag.allowedTouchTypes = pointer
+        drag.delegate = self
+        view.addGestureRecognizer(drag)
+        view.panGestureRecognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         suggester.onTap = { [weak self] in
             if let rest = self?.suggester.accept() { self?.sendText(rest) }
         }
@@ -99,15 +121,24 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
 
     private func show(_ data: Data) {
         let bytes = [UInt8](data)
-        suggester.before(bytes)
-        view.feed(byteArray: bytes[...])
-        suggester.after(bytes)
+        // Fed piece by piece, stopping at each shell mark, so every mark is
+        // read with the screen as it left it.
+        for (piece, mark) in splitter.split(bytes) {
+            view.feed(byteArray: piece)
+            if let mark {
+                let command = suggester.mark(mark)
+                blocks.mark(mark, command: command)
+            }
+        }
         if Self.contains(Self.eraseScrollback, in: bytes) {
             // SwiftTerm drops the history but leaves the view
             // scrolled where it was, past the lines that are left: blank.
             // Setting the history size again re-pins the scroll view.
             view.changeScrollback(Self.scrollback)
+            blocks.clear()
         }
+        suggester.refresh()
+        blocks.redraw()
     }
 
     static let scrollback = 10_000
@@ -136,6 +167,7 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        DispatchQueue.main.async { [weak self] in self?.blocks.redraw() }
         guard let session else { return }
         Task { await session.resize(cols: newCols, rows: newRows) }
     }
@@ -144,6 +176,92 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         // OSC 7: file://host/path
         suggester.directory = directory.flatMap { URL(string: $0)?.path } ?? directory
+    }
+
+    // MARK: Mouse
+
+    private var cell: CGSize {
+        let t = view.getTerminal()
+        let size = view.getOptimalFrameSize()
+        return CGSize(width: size.width / CGFloat(max(t.cols, 1)), height: size.height / CGFloat(max(t.rows, 1)))
+    }
+
+    /// A point of the view (content coordinates) as a buffer position.
+    private func position(_ p: CGPoint) -> Position {
+        let t = view.getTerminal(), c = cell
+        let col = min(max(Int(p.x / max(c.width, 1)), 0), max(t.cols - 1, 0))
+        let row = max(Int(p.y / max(c.height, 1)), 0)
+        return Position(col: col, row: row)
+    }
+
+    @objc private func rightClick(_ g: UITapGestureRecognizer) {
+        menuPoint = g.location(in: view)
+        editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: menuPoint))
+    }
+
+    /// Drag with the mouse: select from where it went down to where it is.
+    @objc private func pointerDrag(_ g: UIPanGestureRecognizer) {
+        let here = position(g.location(in: view))
+        switch g.state {
+        case .began:
+            dragStart = here
+            view.selection.setSelection(start: here, end: here)
+        case .changed:
+            guard let start = dragStart else { return }
+            let forward = (here.row, here.col) >= (start.row, start.col)
+            let end = Position(col: min(here.col + (forward ? 1 : 0), view.getTerminal().cols), row: here.row)
+            view.selection.setSelection(start: forward ? start : end, end: forward ? end : start)
+        default:
+            dragStart = nil
+        }
+        view.setNeedsDisplay()
+    }
+
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        // A program that takes the mouse (vim, htop, tmux) gets it.
+        view.getTerminal().mouseMode == .off
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
+                             suggestedActions: [UIMenuElement]) -> UIMenu? {
+        var items: [UIMenuElement] = []
+        if view.selection.active {
+            items.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                guard let self else { return }
+                UIPasteboard.general.string = self.view.selection.getSelectedText()
+            })
+        }
+        if let b = blocks.block(atBufferRow: position(menuPoint).row) {
+            let command = b.command
+            var block: [UIMenuElement] = [
+                UIAction(title: "Copy Block", image: UIImage(systemName: "rectangle.on.rectangle")) { [weak self] _ in
+                    UIPasteboard.general.string = self?.blocks.text(of: b)
+                },
+                UIAction(title: "Copy Output", image: UIImage(systemName: "text.alignleft")) { [weak self] _ in
+                    UIPasteboard.general.string = self?.blocks.output(of: b)
+                },
+            ]
+            if !command.isEmpty {
+                block.insert(UIAction(title: "Copy Command", image: UIImage(systemName: "terminal")) { _ in
+                    UIPasteboard.general.string = command
+                }, at: 1)
+                block.append(UIAction(title: "Run Again", image: UIImage(systemName: "arrow.clockwise")) { [weak self] _ in
+                    self?.sendText(command + "\n")
+                })
+            }
+            items.append(UIMenu(title: command.isEmpty ? "" : String(command.prefix(50)), options: .displayInline, children: block))
+        }
+        var edit: [UIMenuElement] = []
+        if UIPasteboard.general.hasStrings {
+            edit.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+                self?.view.paste(nil)
+            })
+        }
+        edit.append(UIAction(title: "Select All", image: UIImage(systemName: "selection.pin.in.out")) { [weak self] _ in
+            self?.view.selectAll(nil)
+        })
+        items.append(UIMenu(options: .displayInline, children: edit))
+        return UIMenu(children: items)
     }
 
     /// Text typed into the shell as if from the keyboard.
@@ -223,8 +341,8 @@ final class TerminalHostController: UIViewController {
         NSLayoutConstraint.activate([
             v.topAnchor.constraint(equalTo: holder.topAnchor),
             v.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
-            v.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 4),
-            v.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -4),
+            v.leadingAnchor.constraint(equalTo: holder.leadingAnchor, constant: 10),
+            v.trailingAnchor.constraint(equalTo: holder.trailingAnchor, constant: -10),
         ])
         if v.gestureRecognizers?.contains(where: { $0 is UIPinchGestureRecognizer }) != true {
             v.addGestureRecognizer(UIPinchGestureRecognizer(target: self, action: #selector(pinched(_:))))
@@ -299,10 +417,14 @@ final class TerminalHostController: UIViewController {
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
+            UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
+            UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ]
     }
 
     @objc private func showHistory() { presentHistory(for: termTab) }
+    @objc private func previousBlock() { termTab?.blocks.jump(up: true) }
+    @objc private func nextBlock() { termTab?.blocks.jump(up: false) }
     @objc private func bigger() { Appearance.shared.fontSize = min(Appearance.shared.fontSize + 1, 36) }
     @objc private func smaller() { Appearance.shared.fontSize = max(Appearance.shared.fontSize - 1, 8) }
     @objc private func resetSize() { Appearance.shared.fontSize = 14 }
@@ -505,8 +627,8 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         NSLayoutConstraint.activate([
             screen.topAnchor.constraint(greaterThanOrEqualTo: top.topAnchor),
             pullUp,
-            screen.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 4),
-            screen.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -4),
+            screen.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 12),
+            screen.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12),
         ])
         bottomToKeyboard?.isActive = true
 
@@ -517,7 +639,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
             tabBar.heightAnchor.constraint(equalToConstant: 32),
             tabBar.leadingAnchor.constraint(equalTo: side.leadingAnchor, constant: 6),
             tabBar.trailingAnchor.constraint(equalTo: side.trailingAnchor, constant: -6),
-            screen.topAnchor.constraint(greaterThanOrEqualTo: tabBar.bottomAnchor, constant: 2),
+            screen.topAnchor.constraint(greaterThanOrEqualTo: tabBar.bottomAnchor, constant: 10),
         ])
         tabBar.onSelect = { [weak self] i in
             guard let self, i < self.tabs.count else { return }
@@ -680,6 +802,8 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     }
 
     @objc private func showHistory() { presentHistory(for: focused ?? shown) }
+    @objc private func previousBlock() { (focused ?? shown)?.blocks.jump(up: true) }
+    @objc private func nextBlock() { (focused ?? shown)?.blocks.jump(up: false) }
     @objc private func splitRight() { split(.horizontal) }
     @objc private func splitDown() { split(.vertical) }
     @objc private func nextPane() { stepPane(1) }
@@ -730,10 +854,10 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         super.viewDidAppear(animated)
         (focused ?? shown)?.view.becomeFirstResponder()
         // --suggest-test: runs a command, then types its start (checking without a keyboard).
-        if Checks.has("--suggest-test") {
+        if Checks.arguments.contains("--suggest-test") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                (self?.focused ?? self?.shown)?.sendText("echo pier-history-check\n")
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                (self?.focused ?? self?.shown)?.sendText("echo SH=$0 B=$BASH_VERSION Z=$ZSH_VERSION\necho pier-history-check\nls /nonexistent\nsleep 1.3; echo slow done\n")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 6) {
                     (self?.focused ?? self?.shown)?.sendText("echo pier-h")
                 }
             }
@@ -821,6 +945,8 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
             UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
+            UIKeyCommand(title: "Previous Command", action: #selector(previousBlock), input: UIKeyCommand.inputUpArrow, modifierFlags: .command),
+            UIKeyCommand(title: "Next Command", action: #selector(nextBlock), input: UIKeyCommand.inputDownArrow, modifierFlags: .command),
         ] + (1...9).map {
             UIKeyCommand(title: "Tab \($0)", action: #selector(selectTab(_:)), input: String($0), modifierFlags: .command)
         }

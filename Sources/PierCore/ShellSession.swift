@@ -81,20 +81,33 @@ extension PodRunner {
     static let bashHooks = #"""
         _pier_ran= _pier_armed=
         _pier_precmd() {
-          local s=$?
+          local s=${1:-$?}
           if [[ -n $_pier_ran ]]; then printf '\e]133;D;%s\a' $s; else printf '\e]133;D\a'; fi
           _pier_ran=
           printf '\e]7;file://%s%s\a' "$HOSTNAME" "$PWD"
           [[ $PS1 == *'133;B'* ]] || PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
         }
-        _pier_arm() { _pier_armed=1; }
         _pier_command() { _pier_ran=1; printf '\e]133;C\a'; }
         _pier_preexec() {
           [[ -n $_pier_armed && -z $COMP_LINE ]] || return 0
           _pier_armed=
           # An empty line runs PROMPT_COMMAND straight away: no command of the user's.
-          [[ $BASH_COMMAND == _pier_precmd* ]] && return 0
+          [[ $BASH_COMMAND == _pier_prompt* ]] && return 0
           _pier_command
+        }
+        # The user's PROMPT_COMMAND runs from ours, and ours stays in place even
+        # when theirs replaces the variable (Kali's .bashrc sets it to
+        # "PROMPT_COMMAND=echo", which would wipe any hook after one prompt).
+        _pier_user_pc=
+        _pier_prompt() {
+          local s=$?
+          _pier_precmd $s
+          if [[ -n $_pier_user_pc ]]; then eval "$_pier_user_pc"; fi
+          if [[ $PROMPT_COMMAND != _pier_prompt ]]; then
+            _pier_user_pc=$PROMPT_COMMAND
+            PROMPT_COMMAND=_pier_prompt
+          fi
+          _pier_armed=1
         }
         # A DEBUG trap already set keeps running after ours.
         _pier_trap_body() { eval "set -- $(trap -p DEBUG)"; _pier_debug=${3-}; }
@@ -110,10 +123,12 @@ extension PodRunner {
             trap '_pier_preexec' DEBUG
           fi
           if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
-            PROMPT_COMMAND=(_pier_precmd "${PROMPT_COMMAND[@]}" _pier_arm)
+            _pier_user_pc=$(printf '%s;' "${PROMPT_COMMAND[@]}")
+            unset PROMPT_COMMAND
           else
-            PROMPT_COMMAND="_pier_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};_pier_arm"
+            _pier_user_pc=${PROMPT_COMMAND-}
           fi
+          PROMPT_COMMAND=_pier_prompt
         fi
         """#
 
