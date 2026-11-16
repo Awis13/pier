@@ -1,0 +1,8 @@
+# The same workload on any backend: pierctl --backend jit|auto bench
+services:
+  bench:
+    image: debian:trixie
+    command: sleep infinity
+    mem_limit: 3g
+    volumes:
+      - ./:/bench:ro
