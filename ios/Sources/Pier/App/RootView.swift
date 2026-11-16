@@ -333,7 +333,7 @@ struct ServiceDetail: View {
 
     /// The service's selected shell, alone on the whole screen.
     private func openFullScreen() {
-        if pod.selectedTerminal[service.name] == nil || !pod.terminals.contains(where: { $0.service == service.name }) {
+        if pod.selectedTerminal[service.name] == nil || !pod.terminals.contains(where: { $0.deck == service.name }) {
             pod.openTerminal(in: service)
         }
         guard let id = pod.selectedTerminal[service.name] else { return }

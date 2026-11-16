@@ -11,6 +11,9 @@ import UIKit
 final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDelegate {
     let id = UUID()
     let service: String
+    /// The set of tabs it belongs to: the service's name for its page and
+    /// full screen, or that plus a window's ID for a window of its own.
+    let deck: String
     let view: TerminalView
     @Published var title: String
     @Published private(set) var ended: Int32?
@@ -21,8 +24,9 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     private var pending: [Data] = []
     private weak var pod: PodModel?
 
-    init(service: String, number: Int, pod: PodModel) {
+    init(service: String, deck: String, number: Int, pod: PodModel) {
         self.service = service
+        self.deck = deck
         self.title = number == 1 ? service : "\(service) \(number)"
         self.pod = pod
         self.view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
@@ -297,7 +301,7 @@ struct ServiceTerminals: View {
     let running: Bool
 
     var body: some View {
-        let tabs = pod.terminals.filter { $0.service == service.name }
+        let tabs = pod.terminals.filter { $0.deck == service.name }
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -371,6 +375,7 @@ private struct TabChip: View {
 final class FullScreenTerminalController: UIViewController {
     private let pod: PodModel
     private let service: ServiceSpec
+    private let deck: String
     private let onClose: () -> Void
     private let screen = UIView()
     private let tabBar = TabBar()
@@ -382,16 +387,17 @@ final class FullScreenTerminalController: UIViewController {
     private var pinchBase: Double = 0
     private var looks: AnyCancellable?
 
-    init(pod: PodModel, service: ServiceSpec, onClose: @escaping () -> Void) {
+    init(pod: PodModel, service: ServiceSpec, deck: String, onClose: @escaping () -> Void) {
         self.pod = pod
         self.service = service
+        self.deck = deck
         self.onClose = onClose
         super.init(nibName: nil, bundle: nil)
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    private var tabs: [TermTab] { pod.terminals.filter { $0.service == service.name } }
+    private var tabs: [TermTab] { pod.terminals.filter { $0.deck == deck } }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -433,7 +439,7 @@ final class FullScreenTerminalController: UIViewController {
         }
         tabBar.onNew = { [weak self] in
             guard let self else { return }
-            self.pod.openTerminal(in: self.service)
+            self.pod.openTerminal(in: self.service, deck: self.deck)
             if let t = self.tabs.last { self.show(t) }
         }
         tabBar.onClose = { [weak self] w in
@@ -453,7 +459,7 @@ final class FullScreenTerminalController: UIViewController {
         looks = Appearance.shared.objectWillChange.sink { [weak self] in
             DispatchQueue.main.async { self?.applyAppearance() }
         }
-        let start = tabs.first { $0.id == pod.selectedTerminal[service.name] } ?? tabs.first
+        let start = tabs.first { $0.id == pod.selectedTerminal[deck] } ?? tabs.first
         if let start { show(start) }
         applyAppearance()
     }
@@ -464,7 +470,7 @@ final class FullScreenTerminalController: UIViewController {
         shown?.borrowed = false
         shown = t
         t.borrowed = true
-        pod.selectedTerminal[service.name] = t.id
+        pod.selectedTerminal[deck] = t.id
         let v = t.view
         v.removeFromSuperview()
         v.translatesAutoresizingMaskIntoConstraints = false
@@ -620,10 +626,12 @@ final class FullScreenTerminalController: UIViewController {
 struct FullScreenTerminal: UIViewControllerRepresentable {
     let pod: PodModel
     let service: ServiceSpec
+    /// Whose tabs: the service's own unless a window has its own.
+    var deck: String? = nil
     let onClose: () -> Void
 
     func makeUIViewController(context: Context) -> FullScreenTerminalController {
-        FullScreenTerminalController(pod: pod, service: service, onClose: onClose)
+        FullScreenTerminalController(pod: pod, service: service, deck: deck ?? service.name, onClose: onClose)
     }
 
     func updateUIViewController(_ c: FullScreenTerminalController, context: Context) {}

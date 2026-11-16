@@ -122,19 +122,28 @@ final class PodModel {
     var selectedTerminal: [String: UUID] = [:]
 
 
-    func openTerminal(in service: ServiceSpec) {
+    /// A new shell in `service`, among the tabs of `deck` (by default the
+    /// service's own: its page and full screen).
+    func openTerminal(in service: ServiceSpec, deck: String? = nil) {
+        let deck = deck ?? service.name
         let n = terminals.filter { $0.service == service.name }.count + 1
-        let tab = TermTab(service: service.name, number: n, pod: self)
+        let tab = TermTab(service: service.name, deck: deck, number: n, pod: self)
         terminals.append(tab)
-        selectedTerminal[service.name] = tab.id
+        selectedTerminal[deck] = tab.id
     }
 
     func closeTerminal(_ tab: TermTab) {
         tab.close()
         terminals.removeAll { $0.id == tab.id }
-        if selectedTerminal[tab.service] == tab.id {
-            selectedTerminal[tab.service] = terminals.last { $0.service == tab.service }?.id
+        if selectedTerminal[tab.deck] == tab.id {
+            selectedTerminal[tab.deck] = terminals.last { $0.deck == tab.deck }?.id
         }
+    }
+
+    /// Closes every shell of a window's tabs (the window went away).
+    func closeDeck(_ deck: String) {
+        for t in terminals where t.deck == deck { closeTerminal(t) }
+        selectedTerminal[deck] = nil
     }
 
     /// After the pod comes back, tabs whose shells ended with it start again.
