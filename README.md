@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <img src="docs/demo.gif" width="900" alt="On an iPad: the shop-demo folder is dropped from Files onto Pier, five services start, status lists them with their addresses, and Safari shows the live dashboard">
+  <br>
+  <sub>The <a href="examples/shop-demo">shop demo</a> dropped from Files onto Pier: Postgres, Redis, an order generator, a dashboard and a shell, live in 45 seconds. <a href="docs/demo.mp4">Full-size video</a>.</sub>
+</p>
+
+<p align="center">
   <img src="docs/screenshots/pod.jpg" width="49%" alt="Pier on an iPad: a pod with Kali and nginx running">
   <img src="docs/screenshots/terminal.jpg" width="49%" alt="A full-screen terminal in the Kali container, running fastfetch">
 </p>
