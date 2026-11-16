@@ -248,7 +248,7 @@ struct PodHeader: View {
             JITStatus()
             if pod.isActive {
                 // iPadOS ends an app whose last window is closed; minimizing keeps it.
-                Label("Closing Pier's last window quits it and stops the pod. Minimize it (yellow button) to keep the pod running.", systemImage: "exclamationmark.triangle")
+                Label("Closing the last window stops the pod; minimize to keep it running.", systemImage: "exclamationmark.triangle")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -351,16 +351,8 @@ struct ServiceDetail: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(service.image).font(.callout.monospaced()).textSelection(.enabled)
+                        .lineLimit(2).truncationMode(.middle)
                     Text(state.label).font(.caption).foregroundStyle(.secondary)
-                    if !service.ports.isEmpty {
-                        PortChips(service: service)
-                    }
-                    if let cmd = pod.sshCommand(for: service) {
-                        HStack(spacing: 6) {
-                            Text(cmd + "   password pier").font(.caption.monospaced())
-                            CopyButton(text: cmd).font(.caption)
-                        }
-                    }
                 }
                 Spacer()
                 if pod.snapshot.pod == .running {
@@ -380,6 +372,15 @@ struct ServiceDetail: View {
                     ServiceMenu(service: service)
                 } label: {
                     Image(systemName: "ellipsis.circle").font(.title3)
+                }
+            }
+            if !service.ports.isEmpty {
+                PortChips(service: service)
+            }
+            if let cmd = pod.sshCommand(for: service) {
+                HStack(spacing: 6) {
+                    Text(cmd + "   password pier").font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                    CopyButton(text: cmd).font(.caption)
                 }
             }
             Picker("View", selection: $tab) {
@@ -540,22 +541,26 @@ struct PortChips: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ForEach(service.ports, id: \.self) { port in
-                HStack(spacing: 8) {
-                    Text(":\(port.container)").font(.caption.monospaced().bold())
-                    Image(systemName: "arrow.left").font(.caption2).foregroundStyle(.secondary)
-                    ForEach(pod.addresses(for: port), id: \.self) { address in
-                        HStack(spacing: 4) {
-                            Text(address).font(.caption.monospaced())
-                            CopyButton(text: address).font(.caption)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        Text(":" + String(port.container)).font(.caption.monospaced().bold())
+                        Image(systemName: "arrow.left").font(.caption2).foregroundStyle(.secondary)
+                        ForEach(pod.addresses(for: port), id: \.self) { address in
+                            HStack(spacing: 4) {
+                                Text(address).font(.caption.monospaced()).lineLimit(1)
+                                CopyButton(text: address).font(.caption)
+                            }
+                            .fixedSize()
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(.quaternary, in: .capsule)
                         }
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(.quaternary, in: .capsule)
-                    }
-                    if PortInfo.isWeb(port.container) {
-                        Button("Open") { openURL(URL(string: "http://127.0.0.1:\(port.host)")!) }
-                            .font(.caption).buttonStyle(.bordered)
+                        if PortInfo.isWeb(port.container) {
+                            Button("Open") { openURL(URL(string: "http://127.0.0.1:\(port.host)")!) }
+                                .font(.caption).buttonStyle(.bordered)
+                        }
                     }
                 }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
             }
         }
     }
@@ -655,7 +660,7 @@ struct NetworkView: View {
                     HStack(alignment: .firstTextBaseline) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(service.name).font(.body.monospaced().bold())
-                            Text("\(PortInfo.name(port.container)) :\(port.container) inside").font(.caption).foregroundStyle(.secondary)
+                            Text("\(PortInfo.name(port.container)) :\(String(port.container)) inside").font(.caption).foregroundStyle(.secondary)
                         }
                         .frame(width: 170, alignment: .leading)
                         Circle().fill(dot(for: port, of: service)).frame(width: 8, height: 8)
@@ -699,11 +704,11 @@ struct NetworkView: View {
                             }
                             ForEach(ports, id: \.self) { p in
                                 HStack {
-                                    Text(":\(p)").font(.callout.monospaced())
+                                    Text(":" + String(p)).font(.callout.monospaced())
                                     Text(PortInfo.name(p)).font(.caption).foregroundStyle(.secondary)
                                     Spacer()
                                     if let ip = addresses[service.name] {
-                                        Text("\(ip):\(p)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                                        Text(ip + ":" + String(p)).font(.caption.monospaced()).foregroundStyle(.secondary)
                                         CopyButton(text: "\(ip):\(p)")
                                     }
                                     Text(fwd.contains(p) ? "forwarded" : "inside only")
