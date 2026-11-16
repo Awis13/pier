@@ -69,6 +69,9 @@ public struct ServiceSpec: Codable, Hashable, Sendable, Identifiable {
     public var aliases: [String]?
     /// Stopped by hand: the pod starts without it until it is started again.
     public var stoppedByUser: Bool?
+    /// nmap's host discovery uses probes that get through the VM's NAT
+    /// honestly (see `PodRunner.nmapWrapper`).
+    public var honestScanning: Bool?
 
     public var id: String { name }
 

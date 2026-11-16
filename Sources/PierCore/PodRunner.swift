@@ -557,6 +557,7 @@ public actor PodRunner {
                 say(service.name, "running")
                 setService(service.name, .running)
                 await useHTTPSRepositories(in: service.name)
+                await applyScanning(service)
                 if let port = service.sshPort {
                     let result = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
                     if let (code, out) = result, code == 0 {
@@ -811,6 +812,37 @@ public actor PodRunner {
         setPod(.stopped)
     }
 
+    /// An `nmap` in /usr/local/bin for services with `honestScanning`. The
+    /// VM reaches the network through slirp, which answers a TCP ACK to any
+    /// address itself, so nmap's default host discovery calls every address
+    /// up; unless probes are given, the wrapper uses ICMP echo and SYN, which
+    /// get through honestly. Port scans need nothing.
+    static let nmapWrapper = """
+        #!/bin/sh
+        # pier-nmap-wrapper: added by Pier (service option "Honest network scans").
+        # The pod reaches the network through NAT, which answers a TCP ACK to any
+        # address itself, so nmap's default host discovery would call every address
+        # up. Unless discovery probes are given (-P...), use ICMP echo and SYN to
+        # common ports, which get through honestly. OS detection (-O) sees the NAT.
+        for a in "$@"; do
+            case "$a" in -P*) exec /usr/bin/nmap "$@" ;; esac
+        done
+        [ -x /usr/bin/nmap ] || { echo "nmap is not installed (apt install nmap, apk add nmap, ...)" >&2; exit 127; }
+        exec /usr/bin/nmap -PE -PS21,22,23,25,53,80,110,139,443,445,3389,5900,8000,8080,8443 "$@"
+        """
+
+    /// Puts the nmap wrapper in place, or takes Pier's away, as the option says.
+    func applyScanning(_ service: ServiceSpec) async {
+        let w = "/usr/local/bin/nmap"
+        let script: String
+        if service.honestScanning == true {
+            script = "mkdir -p /usr/local/bin && cat > \(w) <<'PIER_EOF'\n\(Self.nmapWrapper)\nPIER_EOF\nchmod 755 \(w)"
+        } else {
+            script = "grep -q pier-nmap-wrapper \(w) 2>/dev/null && rm -f \(w); true"
+        }
+        _ = try? await exec(["/bin/sh", "-c", script], in: service.name)
+    }
+
     /// Package repositories over HTTPS, with a CA bundle the image may lack.
     /// Plain HTTP does not always get through (a 5G modem answers it with
     /// its own pages), and apt, zypper and others default to it.
@@ -963,6 +995,7 @@ public actor PodRunner {
         say(service.name, "running")
         setService(service.name, .running)
         await useHTTPSRepositories(in: service.name)
+                await applyScanning(service)
         if let port = service.sshPort {
             _ = try? await exec(["/bin/sh", "-c", Self.startSSH(port)], in: service.name)
         }

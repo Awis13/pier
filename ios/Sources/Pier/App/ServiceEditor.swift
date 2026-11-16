@@ -15,6 +15,7 @@ struct ServiceEditor: View {
     @State private var ports = ""
     @State private var memory: UInt64 = 512
     @State private var mountsWork = true
+    @State private var honestScanning = false
     @State private var showingCatalog = false
     @State private var picked: String?
 
@@ -50,6 +51,11 @@ struct ServiceEditor: View {
                     if let problem {
                         Text(problem).foregroundStyle(.red)
                     }
+                }
+                Section {
+                    Toggle("Honest network scans", isOn: $honestScanning)
+                } footer: {
+                    Text("Network traffic leaves through the iPad's NAT, which answers some probes for any address, so nmap would find every host up. On: nmap looks for hosts with ping and TCP SYN instead, which tell the truth. Port scans work either way; nmap's OS detection can't see past the NAT.")
                 }
                 Section {
                     TextField("Command (empty: the image's own)", text: $command, axis: .vertical)
@@ -121,6 +127,7 @@ struct ServiceEditor: View {
         ports = s.ports.map(\.description).joined(separator: " ")
         memory = s.memoryMiB
         mountsWork = s.mountsWork
+        honestScanning = s.honestScanning ?? false
     }
 
     private var parsedPorts: [PortMapping]? {
@@ -145,16 +152,19 @@ struct ServiceEditor: View {
     private var built: ServiceSpec? {
         guard !name.isEmpty, !image.isEmpty, problem == nil, let ports = parsedPorts else { return nil }
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        return ServiceSpec(
-            name: name,
-            image: image.trimmingCharacters(in: .whitespaces),
-            command: trimmed.isEmpty ? [] : ["/bin/sh", "-c", trimmed],
-            environment: environment.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                .filter { $0.contains("=") },
-            ports: ports,
-            memoryMiB: memory,
-            mountsWork: mountsWork
-        )
+        // What the form doesn't show (SSH, Compose's volumes, healthchecks and
+        // the rest) stays as it was.
+        var s = original ?? ServiceSpec(name: name, image: image)
+        s.name = name
+        s.image = image.trimmingCharacters(in: .whitespaces)
+        s.command = trimmed.isEmpty ? [] : ["/bin/sh", "-c", trimmed]
+        s.environment = environment.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.contains("=") }
+        s.ports = ports
+        s.memoryMiB = memory
+        s.mountsWork = mountsWork
+        s.honestScanning = honestScanning ? true : nil
+        return s
     }
 }
 
