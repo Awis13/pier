@@ -42,9 +42,8 @@ struct RootView: View {
                 }
                 if !pod.snapshot.spawned.isEmpty {
                     Section {
-                        ForEach(pod.snapshot.spawned.keys.sorted(), id: \.self) { name in
-                            SpawnedRow(name: name, info: pod.snapshot.spawned[name]!,
-                                       state: pod.snapshot.services[name]) { pod.removeSpawned(name) }
+                        ForEach(pod.snapshot.spawned.sorted { $0.key < $1.key }, id: \.key) { name, info in
+                            SpawnedRow(name: name, info: info, state: pod.snapshot.services[name]) { pod.removeSpawned(name) }
                         }
                         if pod.snapshot.spawned.count > 1 {
                             Button("Remove All", role: .destructive) {
