@@ -514,8 +514,10 @@ extension PodRunner {
             }
             start += 10
         }
-        let finish = extract ? "tar -C \(q) -xf \(part); rc=$?; rm -f \(part); exit $rc"
-            : append ? "cat \(part) >> \(q); rc=$?; rm -f \(part); exit $rc" : "mv -f \(part) \(q)"
+        // Synced before answering: a copy that returned is on the disk, even if
+        // Pier is ended right after.
+        let finish = (extract ? "tar -C \(q) -xf \(part); rc=$?; rm -f \(part)"
+            : append ? "cat \(part) >> \(q); rc=$?; rm -f \(part)" : "mv -f \(part) \(q); rc=$?") + "; sync; exit $rc"
         guard let (code, out) = await exec(["/bin/sh", "-c", finish], in: service, timeout: 120), code == 0 else {
             return .error(500, "could not finish \(path)")
         }
