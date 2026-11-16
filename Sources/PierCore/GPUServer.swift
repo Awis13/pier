@@ -5,7 +5,9 @@
 
 import Foundation
 import Synchronization
+#if canImport(ggml)
 import ggml
+#endif
 
 public enum GPUServer {
     public static let port = 50052
@@ -35,6 +37,7 @@ public enum GPUServer {
 
     private static let started = Mutex(false)
 
+#if canImport(ggml)
     /// The GPU's name and memory, as the server offers it.
     public static func device() -> (name: String, totalMiB: Int)? {
         guard let dev = metal() else { return nil }
@@ -50,6 +53,8 @@ public enum GPUServer {
         return nil
     }
 
+#endif
+
     /// Starts the server once, on a thread of its own (it never returns).
     /// `cache` keeps tensors a client sent before, so a model loads faster
     /// the next time.
@@ -60,6 +65,7 @@ public enum GPUServer {
         ProcessInfo.processInfo.environment["PIER_GPU_BUDGET_MIB"].flatMap(Int.init).map { $0 << 20 } ?? 0
     }
 
+    #if canImport(ggml)
     @discardableResult
     public static func start(cache: URL, budget: Int, log: @escaping @Sendable (String) -> Void) -> Bool {
         ggml_backend_rpc_set_memory_budget(budget)
@@ -87,4 +93,12 @@ public enum GPUServer {
         log("GPU: \(name) for containers at \(endpoint)" + (budget > 0 ? ", up to \(budget >> 20) MB" : ""))
         return true
     }
+    #else
+    /// This build has no GPU (ggml was not there when it was built).
+    @discardableResult
+    public static func start(cache: URL, budget: Int, log: @escaping @Sendable (String) -> Void) -> Bool {
+        log("GPU: not in this build")
+        return false
+    }
+    #endif
 }

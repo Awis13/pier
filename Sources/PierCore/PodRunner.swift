@@ -664,7 +664,7 @@ public actor PodRunner {
         if service.mountsWork {
             c.mounts.append(.sharedMount(name: Self.workVolume, destination: "/work"))
         }
-        if service.gpu == true {
+        if service.gpu == true, GPUShim.data != nil {
             c.mounts.append(.sharedMount(name: Self.workVolume, destination: GPUShim.directory, options: ["ro"], subpath: GPUShim.volumePath))
             c.process.environmentVariables.append(contentsOf: [
                 "GGML_BACKEND_PATH=\(GPUShim.directory)/libggml-rpc.so",

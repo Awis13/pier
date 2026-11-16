@@ -62,7 +62,13 @@ instead of Virtualization.framework. On a Mac the same code uses Hypervisor.fram
   service gets a token, `/pier/AGENT.md` describing what it may do, the `pier` command and a
   Claude Code skill. See [Agent API](#agent-api).
 - **Add services while the pod runs.** The VM boots with spare disk slots, so a new service
-  (or an agent's container) joins in about a second instead of restarting the pod.
+  (or an agent's container) joins in about a second instead of restarting the pod, and its
+  ports reach the iPad at once.
+- **The iPad's GPU for containers.** Turn on **iPad GPU** for a service and the stock
+  `ollama/ollama` image (or anything built on ggml, such as llama.cpp) runs models on the
+  iPad's GPU through Metal, with nothing changed in the image: Pier puts ggml's RPC backend in
+  the container and serves the GPU from the app. Pier keeps no models and limits nothing; a
+  model too big for the iPad may get Pier closed by iPadOS.
 - **Keeps running.** Pods keep going in the background (coarse location keep-alive, on by
   default, never stored or sent).
 - **Package managers that work.** apt, zypper and others are moved to HTTPS with a current CA
@@ -144,10 +150,11 @@ flowchart TB
 
 | Layer | Upstream | What Pier adds |
 |---|---|---|
-| VM engine | [crate](https://github.com/oneamendez/crate) (MPL-2.0): ARM64 JIT on iPad, HVF on Mac, virtio, slirp | a **virtio-vsock** device and its C API; two JIT fixes for exclusive loads and stores — [fork](https://github.com/Awis13/crate/tree/containers) |
+| VM engine | [crate](https://github.com/oneamendez/crate) (MPL-2.0): ARM64 JIT on iPad, HVF on Mac, virtio, slirp | a **virtio-vsock** device and its C API; disks put in and taken out while the VM runs; exclusive loads and stores through the JIT's slow path, which keeps a guest with several CPUs from hanging — [fork](https://github.com/Awis13/crate/tree/containers) |
 | Containers | [apple/containerization](https://github.com/apple/containerization) (Apache-2.0): OCI images, ext4, `LinuxPod`, the `vminitd` agent | a **crate backend** in place of Virtualization.framework; builds for iOS; restart one container, per-container network namespaces, volume preparation — [fork](https://github.com/Awis13/containerization/tree/crate) |
 | Guest | Kata's arm64 kernel config, Apple's `vminit` image | Landlock in the kernel; Pier's `vminitd`/`vmexec` laid over Apple's |
 | Pods | — | `PierCore`: services, Docker-style bridge network, Compose, volumes, healthchecks, restart policies, storage |
+| GPU | [llama.cpp](https://github.com/ggml-org/llama.cpp)'s ggml (MIT): Metal backend and RPC server | the RPC server in the app, a memory limit you can set, and an RPC backend for containers that reaches the app over vsock |
 | App | terminal on [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm); JIT from [crate-ios](https://github.com/oneamendez/crate-ios) and StikJIT | everything you see |
 
 A few details worth knowing:
@@ -186,6 +193,14 @@ a name in the other services' `/etc/hosts`, and stay in the pod, across restarts
 agent or you remove them (an agent may ask for one to go by itself after a while). Each agent
 may have four, 32 MB to 1 GB each; one disk slot always stays free for you. Pier lists them
 under **Started by Agents**. Containers of different agents share one network for now.
+
+## LiveContainer
+
+Pier runs inside [LiveContainer](https://github.com/LiveContainer/LiveContainer) too. There it
+turns JIT on through [StikDebug](https://github.com/StephenDev0/StikDebug), asking it to attach
+to LiveContainer with the `legacy.js` script, by itself when it starts. Leave **Launch with
+JIT** off for Pier in LiveContainer (it would attach with StikDebug's default script, which
+leaves at once), and import a certificate in LiveContainer's settings, which iPadOS 26 needs.
 
 ## Requirements
 
@@ -235,6 +250,10 @@ cd ios && xcodegen generate && open Pier.xcodeproj
 
 `ios/Scripts/make-ipa.sh` builds `Pier.ipa` for sideloading.
 
+The GPU for containers is optional: `gpu/build-ggml.sh` builds `Frameworks/ggml.xcframework`
+(from llama.cpp) and `gpu/build-shim.sh` the backend containers load, in an `ollama/ollama`
+container. Without them Pier builds without the GPU.
+
 Set your team in `ios/project.yml` (`DEVELOPMENT_TEAM`, bundle IDs) before building to a device.
 You need Xcode 26 or later, [XcodeGen](https://github.com/yonaskolb/XcodeGen) and a Rust
 toolchain from rustup (for crate).
@@ -257,8 +276,10 @@ codesign -f -s - --entitlements pierctl.entitlements .build/debug/pierctl
 - **Building images.** Dropping a Dockerfile, or `build:` in Compose, isn't supported yet.
   Use an image from a registry.
 - A service added while the pod runs takes one of four spare disk slots; with none left, or
-  when a service is removed or changed by hand, the pod restarts. Its ports reach the other
-  services, not the iPad, until the pod restarts.
+  when a service is removed or changed by hand (other than its ports and agent access), the
+  pod restarts.
+- The GPU is reached through ggml's RPC protocol, so a model runs a few times slower than
+  natively on the same iPad.
 - Agents' containers share the pod's one network; separate networks per agent come later.
 - Forwarded ports are TCP only.
 - Bind mounts are copies taken at import, not live folders.
