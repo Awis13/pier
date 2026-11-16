@@ -71,6 +71,8 @@ struct RootView: View {
                 )
             }
         }
+        .background(MainWindowMark())
+        .onAppear { MainWindow.shared.open = { openWindow(id: "main") } }
         .focusedSceneValue(\.selectedService, pod.spec.services.contains(where: { $0.name == selection }) ? selection : nil)
         .sheet(isPresented: $adding) {
             ServiceEditor(original: nil) { new in
