@@ -79,19 +79,11 @@ public enum GPUServer {
     /// Starts the server once, on a thread of its own (it never returns).
     /// `cache` keeps tensors a client sent before, so a model loads faster
     /// the next time.
-    /// What containers may hold on the GPU: on an iPad, the memory the VM and
-    /// iPadOS leave (the GPU shares it), so a model too big for it is split
-    /// with the CPU instead of getting the app ended; on a Mac, no limit.
+    /// What containers may hold on the GPU: no limit, unless
+    /// PIER_GPU_BUDGET_MIB sets one. A model too big for the iPad may get
+    /// Pier ended by iPadOS; that is the user's call.
     public static func budget(vmMiB: UInt64) -> Int {
-        if let mib = ProcessInfo.processInfo.environment["PIER_GPU_BUDGET_MIB"].flatMap(Int.init) { return mib << 20 }
-        #if os(iOS)
-        let reserve: UInt64 = 3 << 30          // iPadOS, the app, crate's JIT code
-        let total = ProcessInfo.processInfo.physicalMemory
-        let used = vmMiB << 20 + reserve
-        return total > used + (512 << 20) ? Int(total - used) : 512 << 20
-        #else
-        return 0
-        #endif
+        ProcessInfo.processInfo.environment["PIER_GPU_BUDGET_MIB"].flatMap(Int.init).map { $0 << 20 } ?? 0
     }
 
     @discardableResult
