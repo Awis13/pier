@@ -26,6 +26,8 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     private var connecting = false
     private var pending: [Data] = []
     private weak var pod: PodModel?
+    /// The history's suggestion at the prompt, and the commands that ran.
+    private(set) var suggester: Suggester!
 
     init(service: String, deck: String, number: Int, pod: PodModel) {
         self.service = service
@@ -35,6 +37,10 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
         self.view = TerminalView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
         super.init()
         view.terminalDelegate = self
+        suggester = Suggester(view: view, service: service)
+        suggester.onTap = { [weak self] in
+            if let rest = self?.suggester.accept() { self?.sendText(rest) }
+        }
         view.changeScrollback(Self.scrollback)
         Self.style(view)
     }
@@ -93,7 +99,9 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
 
     private func show(_ data: Data) {
         let bytes = [UInt8](data)
+        suggester.before(bytes)
         view.feed(byteArray: bytes[...])
+        suggester.after(bytes)
         if Self.contains(Self.eraseScrollback, in: bytes) {
             // SwiftTerm drops the history but leaves the view
             // scrolled where it was, past the lines that are left: blank.
@@ -116,6 +124,13 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     // MARK: TerminalViewDelegate
 
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        // Right arrow with a suggestion showing types the suggestion.
+        let bytes = Array(data)
+        if bytes == [0x1b, 0x5b, 0x43] || bytes == [0x1b, 0x4f, 0x43], let rest = suggester.accept() {
+            sendText(rest)
+            return
+        }
+        suggester.keySent()
         let d = Data(data)
         if let session { session.send(d) } else { pending.append(d) }
     }
@@ -126,7 +141,16 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     }
 
     func setTerminalTitle(source: TerminalView, title: String) {}
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        // OSC 7: file://host/path
+        suggester.directory = directory.flatMap { URL(string: $0)?.path } ?? directory
+    }
+
+    /// Text typed into the shell as if from the keyboard.
+    func sendText(_ text: String) {
+        let d = Data(text.utf8)
+        if let session { session.send(d) } else { pending.append(d) }
+    }
     func scrolled(source: TerminalView, position: Double) {}
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         if let url = URL(string: link) { UIApplication.shared.open(url) }
@@ -274,9 +298,11 @@ final class TerminalHostController: UIViewController {
             UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
+            UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
         ]
     }
 
+    @objc private func showHistory() { presentHistory(for: termTab) }
     @objc private func bigger() { Appearance.shared.fontSize = min(Appearance.shared.fontSize + 1, 36) }
     @objc private func smaller() { Appearance.shared.fontSize = max(Appearance.shared.fontSize - 1, 8) }
     @objc private func resetSize() { Appearance.shared.fontSize = 14 }
@@ -375,6 +401,17 @@ private struct TabChip: View {
 /// background, a tab strip of sessions on top (select, + for a new
 /// one, x to close, long press to rename), the text 4 pt off the sides, the
 /// key bar over the keyboard. Cmd+W or a two-finger swipe down leaves.
+extension UIViewController {
+    /// Cmd-R: the command history; the one picked is typed (not run) into `tab`.
+    func presentHistory(for tab: TermTab?) {
+        guard let tab else { return }
+        let search = HistorySearchView(service: tab.service) { [weak tab] command in
+            tab?.sendText(command)
+        }
+        present(UIHostingController(rootView: search), animated: true)
+    }
+}
+
 final class FullScreenTerminalController: UIViewController, UIGestureRecognizerDelegate {
     private let pod: PodModel
     private let service: ServiceSpec
@@ -642,6 +679,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
         }
     }
 
+    @objc private func showHistory() { presentHistory(for: focused ?? shown) }
     @objc private func splitRight() { split(.horizontal) }
     @objc private func splitDown() { split(.vertical) }
     @objc private func nextPane() { stepPane(1) }
@@ -691,6 +729,15 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         (focused ?? shown)?.view.becomeFirstResponder()
+        // --suggest-test: runs a command, then types its start (checking without a keyboard).
+        if Checks.has("--suggest-test") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                (self?.focused ?? self?.shown)?.sendText("echo pier-history-check\n")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                    (self?.focused ?? self?.shown)?.sendText("echo pier-h")
+                }
+            }
+        }
         // --split: right, then down (checking without a keyboard).
         if Checks.has("--split") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
@@ -773,6 +820,7 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
             UIKeyCommand(title: "Bigger Text", action: #selector(bigger), input: "=", modifierFlags: .command),
             UIKeyCommand(title: "Smaller Text", action: #selector(smaller), input: "-", modifierFlags: .command),
             UIKeyCommand(title: "Actual Size", action: #selector(resetSize), input: "0", modifierFlags: .command),
+            UIKeyCommand(title: "Command History", action: #selector(showHistory), input: "r", modifierFlags: .command),
         ] + (1...9).map {
             UIKeyCommand(title: "Tab \($0)", action: #selector(selectTab(_:)), input: String($0), modifierFlags: .command)
         }

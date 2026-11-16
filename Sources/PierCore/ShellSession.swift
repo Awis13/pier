@@ -70,11 +70,67 @@ public final class ShellSession: Sendable {
 }
 
 extension PodRunner {
-    /// The login shell of the service: bash if the image has it, else sh.
-    static let shellCommand = [
-        "/bin/sh", "-c",
-        "if command -v bash >/dev/null 2>&1; then exec bash -l; elif command -v ash >/dev/null 2>&1; then exec ash -l; else exec sh -l; fi",
-    ]
+    /// The service's shell: bash if the image has it, else ash or sh. bash
+    /// starts with hooks that mark its prompts and commands (OSC 133), as
+    /// Ghostty and Warp do, with nothing installed in the container: a rc
+    /// file in a fresh temporary directory reads the login files, adds the
+    /// hooks and removes the directory. The marks let the terminal tell what
+    /// is typed at the prompt (suggestions from history) and what ran.
+    static let shellCommand = ["/bin/sh", "-c", shellLoader]
+
+    static let bashHooks = #"""
+        _pier_ran= _pier_armed=
+        _pier_precmd() {
+          local s=$?
+          if [[ -n $_pier_ran ]]; then printf '\e]133;D;%s\a' $s; else printf '\e]133;D\a'; fi
+          _pier_ran=
+          printf '\e]7;file://%s%s\a' "$HOSTNAME" "$PWD"
+          [[ $PS1 == *'133;B'* ]] || PS1='\[\e]133;A\a\]'"$PS1"'\[\e]133;B\a\]'
+        }
+        _pier_arm() { _pier_armed=1; }
+        _pier_command() { _pier_ran=1; printf '\e]133;C\a'; }
+        _pier_preexec() {
+          [[ -n $_pier_armed && -z $COMP_LINE ]] || return 0
+          _pier_armed=
+          # An empty line runs PROMPT_COMMAND straight away: no command of the user's.
+          [[ $BASH_COMMAND == _pier_precmd* ]] && return 0
+          _pier_command
+        }
+        # A DEBUG trap already set keeps running after ours.
+        _pier_trap_body() { eval "set -- $(trap -p DEBUG)"; _pier_debug=${3-}; }
+        if [[ -n ${bash_preexec_imported:-}${__bp_imported:-} ]]; then
+          precmd_functions=(_pier_precmd "${precmd_functions[@]}")
+          preexec_functions+=(_pier_command)
+        else
+          _pier_debug=
+          _pier_trap_body
+          if [[ -n $_pier_debug ]]; then
+            trap '_pier_preexec; eval "$_pier_debug"' DEBUG
+          else
+            trap '_pier_preexec' DEBUG
+          fi
+          if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+            PROMPT_COMMAND=(_pier_precmd "${PROMPT_COMMAND[@]}" _pier_arm)
+          else
+            PROMPT_COMMAND="_pier_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND};_pier_arm"
+          fi
+        fi
+        """#
+
+    static let shellLoader = """
+        if command -v bash >/dev/null 2>&1; then
+          d=$(mktemp -d 2>/dev/null) || exec bash -l
+          cat >"$d/rc" <<'PIER_EOF'
+        [ -f /etc/profile ] && . /etc/profile
+        for f in ~/.bash_profile ~/.bash_login ~/.profile; do [ -f "$f" ] && { . "$f"; break; }; done
+        \(bashHooks)
+        command rm -rf -- "$PIER_TMP"; unset PIER_TMP
+        PIER_EOF
+          PIER_TMP=$d exec bash --rcfile "$d/rc" -i
+        elif command -v ash >/dev/null 2>&1; then exec ash -l
+        else exec sh -l
+        fi
+        """
 
     /// Opens a shell with a terminal in a running service. `output` gets
     /// everything the terminal prints, on the agent's threads.
