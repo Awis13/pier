@@ -14,9 +14,10 @@ cli=${CONTAINER_CLI:-docker}
 $cli run --rm --platform linux/arm64 -v "$here/gpu:/gpu" -e TAG="$tag" --entrypoint /bin/sh "ollama/ollama:$ollama" -c '
 set -e
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq >/dev/null && apt-get install -y -qq g++ git ca-certificates >/dev/null
+apt-get update -qq >/dev/null && apt-get install -y -qq g++ git ca-certificates python3 >/dev/null
 git clone -q --depth 1 --branch "$TAG" https://github.com/ggml-org/llama.cpp /src
 cd /src/ggml/src/ggml-rpc
+python3 /gpu/rpc-vsock.py transport.cpp
 sed "s|std::string dev_desc = std::string(endpoint);|std::string dev_desc = std::string(\"Apple GPU (Metal, via Pier) \") + endpoint;|" ggml-rpc.cpp > /tmp/ggml-rpc.cpp
 grep -q "via Pier" /tmp/ggml-rpc.cpp
 g++ -shared -fPIC -O2 -std=c++17 -DGGML_BACKEND_SHARED -DGGML_BACKEND_BUILD -I../../include -I.. -I. \

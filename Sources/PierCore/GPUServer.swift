@@ -9,9 +9,55 @@ import ggml
 
 public enum GPUServer {
     public static let port = 50052
-    /// Where containers find it: the VM's user-mode network sends 10.0.2.2
-    /// to the app's own loopback.
-    public static let endpoint = "10.0.2.2:\(port)"
+    /// Where containers find it: the VM's vsock, to the app (the backend in
+    /// the container connects with AF_VSOCK, past the VM's network); the app
+    /// passes each connection to the server on its loopback.
+    public static let endpoint = "vsock:\(port)"
+
+    /// Joins a vsock connection from a container to the server, both ways,
+    /// on threads of their own; closes both when either side ends.
+    static func bridge(_ vsock: Int32) {
+        let tcp = socket(AF_INET, SOCK_STREAM, 0)
+        guard tcp >= 0 else { close(vsock); return }
+        var one: Int32 = 1
+        setsockopt(tcp, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(UInt16(port).bigEndian)
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connected = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(tcp, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0 }
+        }
+        guard connected else { close(tcp); close(vsock); return }
+        let open = Mutex(2)
+        func pump(_ from: Int32, _ to: Int32) {
+            let t = Thread {
+                var buffer = [UInt8](repeating: 0, count: 1 << 20)
+                while true {
+                    let n = read(from, &buffer, buffer.count)
+                    if n <= 0 { break }
+                    var sent = 0
+                    while sent < n {
+                        let w = buffer.withUnsafeBytes { write(to, $0.baseAddress! + sent, n - sent) }
+                        if w <= 0 { break }
+                        sent += w
+                    }
+                    if sent < n { break }
+                }
+                shutdown(to, SHUT_WR)
+                shutdown(from, SHUT_RD)
+                if open.withLock({ $0 -= 1; return $0 == 0 }) {
+                    close(tcp)
+                    close(vsock)
+                }
+            }
+            t.stackSize = 1 << 20
+            t.start()
+        }
+        pump(vsock, tcp)
+        pump(tcp, vsock)
+    }
 
     private static let started = Mutex(false)
 

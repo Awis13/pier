@@ -141,6 +141,8 @@ public actor PodRunner {
     var agentTokens: [String: String] = [:]
     var spawnTimers: [String: Task<Void, Never>] = [:]
     var agentListener: VsockListener?
+    /// Containers' connections to the GPU, over vsock.
+    var gpuListener: VsockListener?
     /// The pod's hosts file and network kind, for services added later.
     private var bootHosts: Hosts?
     private var restarts: [String: Int] = [:]
@@ -978,6 +980,8 @@ public actor PodRunner {
         guard let pod else { return }
         setPod(.stopping)
         stopAgentAPI()
+        try? gpuListener?.finish()
+        gpuListener = nil
         restartTasks.values.forEach { $0.cancel() }
         restartTasks.removeAll()
         // Everything written reaches the disks before the machine goes.
@@ -1417,6 +1421,20 @@ extension PodRunner {
         let log = podLog
         let budget = GPUServer.budget(vmMiB: currentSpec?.memoryMiB ?? 0)
         GPUServer.start(cache: root.appendingPathComponent("gpu-cache"), budget: budget) { log.note($0) }
+        guard gpuListener == nil else { return }
+        do {
+            let listener = try await pod.withVirtualMachineInstance { try $0.listen(UInt32(GPUServer.port)) }
+            gpuListener = listener
+            Task.detached {
+                for await connection in listener {
+                    let fd = dup(connection.fileDescriptor)
+                    try? connection.close()
+                    if fd >= 0 { GPUServer.bridge(fd) }
+                }
+            }
+        } catch {
+            podLog.note("GPU: could not listen on vsock: \(error)")
+        }
     }
 }
 

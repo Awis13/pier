@@ -12,14 +12,29 @@
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <linux/vm_sockets.h>
 #include "ggml-rpc.h"
 #include "ggml-backend-impl.h"
 
-// Whether something answers at host:port within two seconds.
+// Whether something answers at host:port (or vsock:port, the VM's host)
+// within two seconds.
 static bool reachable(const std::string & endpoint) {
     size_t colon = endpoint.rfind(':');
     if (colon == std::string::npos) return false;
     std::string host = endpoint.substr(0, colon), port = endpoint.substr(colon + 1);
+    if (host == "vsock") {
+        int fd = socket(AF_VSOCK, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+        sockaddr_vm vm{};
+        vm.svm_family = AF_VSOCK;
+        vm.svm_cid = VMADDR_CID_HOST;
+        vm.svm_port = (unsigned) std::atoi(port.c_str());
+        timeval tv{2, 0};
+        setsockopt(fd, AF_VSOCK, SO_VM_SOCKETS_CONNECT_TIMEOUT, &tv, sizeof(tv));
+        bool ok = connect(fd, (sockaddr *) &vm, sizeof(vm)) == 0;
+        close(fd);
+        return ok;
+    }
     addrinfo hints{}, * res = nullptr;
     hints.ai_socktype = SOCK_STREAM;
     if (getaddrinfo(host.c_str(), port.c_str(), &hints, &res) != 0 || !res) return false;
@@ -44,7 +59,7 @@ static bool reachable(const std::string & endpoint) {
 extern "C" {
 GGML_BACKEND_API ggml_backend_reg_t ggml_backend_init(void) {
     const char * env = std::getenv("PIER_GPU");
-    std::string endpoint = env && *env ? env : "10.0.2.2:50052";
+    std::string endpoint = env && *env ? env : "vsock:50052";
     if (!reachable(endpoint)) {
         std::fprintf(stderr, "pier: the iPad's GPU does not answer at %s (is GPU on for this service in Pier?); using the CPU\n", endpoint.c_str());
         return nullptr;
