@@ -424,7 +424,9 @@ final class TerminalHostController: UIViewController {
     }
 
     @objc private func showHistory() { presentHistory(for: termTab) }
-    @objc private func quickSwitch() { NotificationCenter.default.post(name: .pierQuickSwitch, object: termTab?.deck) }
+    @objc private func quickSwitch() {
+        NotificationCenter.default.post(name: .pierQuickSwitch, object: termTab?.deck)
+    }
     @objc private func previousBlock() { termTab?.blocks.jump(up: true) }
     @objc private func nextBlock() { termTab?.blocks.jump(up: false) }
     @objc private func bigger() { Appearance.shared.fontSize = min(Appearance.shared.fontSize + 1, 36) }
@@ -812,7 +814,22 @@ final class FullScreenTerminalController: UIViewController, UIGestureRecognizerD
     }
 
     @objc private func showHistory() { presentHistory(for: focused ?? shown) }
-    @objc private func quickSwitch() { NotificationCenter.default.post(name: .pierQuickSwitch, object: deck) }
+    /// Shown from here when this controller covers its window: SwiftUI's
+    /// sheet underneath cannot present over it.
+    @objc private func quickSwitch() {
+        guard presentingViewController != nil else {
+            NotificationCenter.default.post(name: .pierQuickSwitch, object: deck)
+            return
+        }
+        guard presentedViewController == nil else { return }
+        let model = SwitcherModel(pod: pod, currentTab: shown?.id)
+        let host = UIHostingController(rootView: SwitcherView(model: model) { e in
+            NotificationCenter.default.post(name: .pierSwitchPick, object: e)
+        })
+        host.modalPresentationStyle = .formSheet
+        host.preferredContentSize = CGSize(width: 760, height: 520)
+        present(host, animated: true)
+    }
     @objc private func previousBlock() { (focused ?? shown)?.blocks.jump(up: true) }
     @objc private func nextBlock() { (focused ?? shown)?.blocks.jump(up: false) }
     @objc private func splitRight() { split(.horizontal) }

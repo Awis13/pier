@@ -38,6 +38,8 @@ extension Notification.Name {
     /// Cmd-P from a terminal (it takes the keys before the menu bar does);
     /// the object is the deck it shows.
     static let pierQuickSwitch = Notification.Name("pier.quickSwitch")
+    /// A pick in a switcher a UIKit controller showed; the main window goes there.
+    static let pierSwitchPick = Notification.Name("pier.switchPick")
 }
 
 @MainActor
