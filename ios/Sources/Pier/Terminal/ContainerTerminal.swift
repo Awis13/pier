@@ -59,6 +59,14 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
         right.buttonMaskRequired = .secondary
         right.allowedTouchTypes = pointer
         view.addGestureRecognizer(right)
+        // A click elsewhere drops the selection, as on a Mac; it still
+        // reaches the terminal (focus, the cursor).
+        let click = UITapGestureRecognizer(target: self, action: #selector(pointerClick(_:)))
+        click.buttonMaskRequired = .primary
+        click.allowedTouchTypes = pointer
+        click.cancelsTouchesInView = false
+        click.delegate = self
+        view.addGestureRecognizer(click)
         let drag = UIPanGestureRecognizer(target: self, action: #selector(pointerDrag(_:)))
         drag.allowedTouchTypes = pointer
         drag.delegate = self
@@ -201,6 +209,12 @@ final class TermTab: NSObject, Identifiable, ObservableObject, TerminalViewDeleg
     @objc private func rightClick(_ g: UITapGestureRecognizer) {
         menuPoint = g.location(in: view)
         editMenu?.presentEditMenu(with: UIEditMenuConfiguration(identifier: nil, sourcePoint: menuPoint))
+    }
+
+    @objc private func pointerClick(_ g: UITapGestureRecognizer) {
+        guard view.selection.active else { return }
+        view.selection.selectNone()
+        view.setNeedsDisplay()
     }
 
     /// Drag with the mouse: select from where it went down to where it is.
